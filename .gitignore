@@ -1,0 +1,8 @@
+outputs/
+data/raw/
+*.nii
+*.nii.gz
+__pycache__/
+.ipynb_checkpoints/
+*.pt
+*.pth

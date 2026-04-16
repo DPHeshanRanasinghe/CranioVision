@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from monai.networks.nets import AttentionUnet, SwinUNETR, UNet
+from monai.networks.nets import UNet
+
+from src.models.attention_unet import build_attention_unet
+from src.models.swin_unetr import build_swin_unetr
 
 
 def build_model(config: dict[str, Any]):
@@ -24,22 +27,10 @@ def build_model(config: dict[str, Any]):
         )
 
     if model_name == "attention_unet":
-        return AttentionUnet(
-            spatial_dims=3,
-            in_channels=model_cfg["in_channels"],
-            out_channels=model_cfg["out_channels"],
-            channels=tuple(model_cfg["channels"]),
-            strides=tuple(model_cfg["strides"]),
-        )
+        return build_attention_unet(config)
 
     if model_name == "swinunetr":
-        return SwinUNETR(
-            img_size=tuple(model_cfg.get("img_size", config["preprocessing"]["roi_size"])),
-            in_channels=model_cfg["in_channels"],
-            out_channels=model_cfg["out_channels"],
-            feature_size=model_cfg.get("feature_size", 48),
-            use_checkpoint=model_cfg.get("use_checkpoint", False),
-        )
+        return build_swin_unetr(config)
 
     raise ValueError(
         f"Unsupported model '{model_cfg['name']}'. "

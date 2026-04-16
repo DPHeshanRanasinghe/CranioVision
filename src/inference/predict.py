@@ -11,7 +11,7 @@ import torch
 from monai.data import CacheDataset, DataLoader
 from monai.inferers import sliding_window_inference
 
-from src.data.brats_dataset import discover_brats_cases, split_cases
+from src.data.dataset import discover_brats_cases, split_cases
 from src.data.transforms import build_val_transforms
 from src.models.factory import build_model
 from src.utils.config import load_config
@@ -69,6 +69,7 @@ def main() -> None:
         cases=cases,
         validation_ratio=config["data"]["validation_ratio"],
         seed=config["data"]["seed"],
+        split_manifest_path=config["data"].get("split_manifest_path"),
     )
 
     dataset = CacheDataset(

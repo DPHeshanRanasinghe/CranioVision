@@ -1,10 +1,11 @@
 project:
   name: CranioVision
-  output_dir: outputs
+  # Relative paths are resolved from this config file's directory.
+  output_dir: ../outputs
 
 data:
-  # Set this before running notebooks or training.
-  root_dir: ""
+  # Local default for the BraTS small dataset under the repo's data/ folder.
+  root_dir: ../data/raw/BraTS2024_small_dataset
   expected_modalities:
     - t1
     - t1ce
@@ -22,6 +23,7 @@ data:
       - t1c
     t2:
       - t2
+      - t2w
     flair:
       - flair
       - t2f
@@ -33,6 +35,7 @@ data:
   validation_ratio: 0.2
   seed: 42
   validate_shapes: true
+  split_manifest_path: null
   batch_size: 1
   val_batch_size: 1
   num_workers: 2
@@ -77,6 +80,7 @@ model:
   name: unet
   in_channels: 4
   out_channels: 4
+  spatial_dims: 3
   channels:
     - 16
     - 32
@@ -89,6 +93,12 @@ model:
     - 2
     - 2
   num_res_units: 2
+  # SwinUNETR uses `img_size`; by default it falls back to preprocessing.roi_size.
+  img_size:
+    - 128
+    - 128
+    - 128
+  # For SwinUNETR this must be divisible by 12.
   feature_size: 48
   use_checkpoint: false
 
