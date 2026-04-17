@@ -1,8 +1,75 @@
-outputs/
+# ===== CranioVision .gitignore =====
+
+# ── Medical data (NEVER commit) ──
 data/raw/
+data/processed/
 *.nii
 *.nii.gz
+*.dcm
+*.dicom
+
+# ── Model checkpoints ──
+models/*.pth
+models/*.pt
+models/*.ckpt
+models/*.onnx
+
+# ── Outputs and results ──
+outputs/
+!outputs/.gitkeep
+logs/
+wandb/
+mlruns/
+lightning_logs/
+
+# ── Python ──
 __pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+*.egg
+build/
+dist/
+.eggs/
+
+# ── Virtual environments ──
+.venv/
+venv/
+env/
+ENV/
+
+# ── Jupyter ──
 .ipynb_checkpoints/
-*.pt
-*.pth
+*.ipynb_checkpoints
+
+# ── IDE ──
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── OS ──
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Testing / coverage ──
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# ── Environment files with secrets ──
+.env
+.env.local
+*.key
+*.pem
+
+# ── Temporary ──
+tmp/
+temp/
+*.tmp
+*.bak
