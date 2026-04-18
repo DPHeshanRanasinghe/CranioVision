@@ -9,10 +9,10 @@ data/processed/
 *.dicom
 
 # ── Model checkpoints ──
-**/*.pth
-**/*.pt
-**/*.ckpt
-**/*.onnx
+models/*.pth
+models/*.pt
+models/*.ckpt
+models/*.onnx
 
 # ── Outputs and results ──
 outputs/
