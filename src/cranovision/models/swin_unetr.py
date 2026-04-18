@@ -39,7 +39,7 @@ def build_swin_unetr(
     drop_rate: float = 0.0,
     attn_drop_rate: float = 0.0,
     dropout_path_rate: float = 0.1,
-    use_checkpoint: bool = True,
+    use_checkpoint: bool = False,
 ) -> SwinUNETR:
     """
     Build a 3D SwinUNETR with CranioVision defaults.
