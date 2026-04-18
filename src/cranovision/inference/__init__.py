@@ -14,6 +14,11 @@ from .mc_dropout import (
     enable_dropout,
     count_dropout_layers,
 )
+from .grad_cam import (
+    GradCAM3D,
+    compute_grad_cam,
+    find_target_layer,
+)
 
 __all__ = [
     # predict
@@ -27,4 +32,8 @@ __all__ = [
     "summarize_confidence",
     "enable_dropout",
     "count_dropout_layers",
+    # grad_cam
+    "GradCAM3D",
+    "compute_grad_cam",
+    "find_target_layer",
 ]
