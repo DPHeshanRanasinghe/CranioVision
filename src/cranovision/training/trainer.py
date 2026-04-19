@@ -95,7 +95,9 @@ def train_one_epoch(model, loader, loss_fn, optimizer, scaler, use_amp: bool):
 
     for batch in loader:
         images = batch["image"].to(DEVICE, non_blocking=True)
+        if hasattr(images, "as_tensor"): images = images.as_tensor()
         labels = batch["label"].to(DEVICE, non_blocking=True)
+        if hasattr(labels, "as_tensor"): labels = labels.as_tensor()
 
         optimizer.zero_grad(set_to_none=True)
 
@@ -126,7 +128,9 @@ def validate(model, loader, inferer, use_amp: bool):
     with torch.no_grad():
         for batch in loader:
             images = batch["image"].to(DEVICE, non_blocking=True)
+            if hasattr(images, "as_tensor"): images = images.as_tensor()
             labels = batch["label"].to(DEVICE, non_blocking=True)
+            if hasattr(labels, "as_tensor"): labels = labels.as_tensor()
 
             with torch.cuda.amp.autocast(enabled=use_amp):
                 outputs = inferer(images, model)
