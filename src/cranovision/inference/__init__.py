@@ -19,6 +19,13 @@ from .grad_cam import (
     compute_grad_cam,
     find_target_layer,
 )
+from .ensemble import (
+    load_ensemble,
+    ensemble_predict,
+    compute_agreement,
+    weights_from_val_dice,
+    MODEL_REGISTRY,
+)
 
 __all__ = [
     # predict
@@ -36,4 +43,10 @@ __all__ = [
     "GradCAM3D",
     "compute_grad_cam",
     "find_target_layer",
+    # ensemble
+    "load_ensemble",
+    "ensemble_predict",
+    "compute_agreement",
+    "weights_from_val_dice",
+    "MODEL_REGISTRY",
 ]
