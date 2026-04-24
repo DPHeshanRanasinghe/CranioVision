@@ -29,10 +29,57 @@ from ..data import get_val_transforms
 
 def find_target_layer(model: nn.Module, model_name: str) -> nn.Module:
     """Pick a sensible deep Conv3d layer for Grad-CAM extraction."""
-    convs = [m for m in model.modules() if isinstance(m, nn.Conv3d)]
-    if not convs:
+    named_convs = [
+        (name, module)
+        for name, module in model.named_modules()
+        if isinstance(module, nn.Conv3d)
+    ]
+    if not named_convs:
         raise RuntimeError("No Conv3d layer found in model.")
-    return convs[-2] if len(convs) >= 2 else convs[-1]
+
+    name = model_name.lower()
+    preferred_names = []
+
+    if name in ("nnunet", "nn_unet", "dynunet"):
+        # DynUNet keeps deep-supervision heads in the module tree, but those
+        # heads are skipped in eval mode. Hook the last decoder block instead.
+        preferred_names = [
+            "model.upsamples.4.conv_block.conv2.conv",
+            "model.upsamples.4.conv_block.conv1.conv",
+            "model.output_block.conv.conv",
+        ]
+    elif name in ("swin_unetr", "swin"):
+        preferred_names = [
+            "decoder1.conv_block.conv3.conv",
+            "decoder1.conv_block.conv2.conv",
+            "out.conv.conv",
+        ]
+    elif name in ("attention_unet", "attention", "attn"):
+        preferred_names = [
+            "model.1.submodule.1.submodule.1.submodule.1.submodule.conv.1.conv",
+            "model.1.submodule.1.submodule.1.submodule.1.submodule.conv.0.conv",
+            "model.2.conv",
+        ]
+
+    conv_by_name = dict(named_convs)
+    for preferred in preferred_names:
+        if preferred in conv_by_name:
+            return conv_by_name[preferred]
+
+    # Generic fallback: avoid output/deep-supervision heads when possible.
+    usable = [
+        module for layer_name, module in named_convs
+        if "deep_supervision" not in layer_name and "output_block" not in layer_name
+    ]
+    return usable[-1] if usable else named_convs[-1][1]
+
+
+def _module_name(model: nn.Module, target_layer: nn.Module) -> str:
+    """Return a stable display name for a selected module."""
+    for name, module in model.named_modules():
+        if module is target_layer:
+            return name
+    return type(target_layer).__name__
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -65,6 +112,8 @@ class GradCAM3D:
         target_class: int,
         target_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        self.activations = None
+        self.gradients = None
         self.model.eval()
         self.model.zero_grad()
         input_tensor = input_tensor.clone().detach().requires_grad_(True)
@@ -177,9 +226,9 @@ def compute_grad_cam(
         print(f"Patch shape             : {tuple(img_patch.shape)}")
 
     target_layer = find_target_layer(model, model_name)
-    layer_name = type(target_layer).__name__
+    layer_name = _module_name(model, target_layer)
     if verbose:
-        print(f"Target layer: {layer_name}")
+        print(f"Target layer: {layer_name} ({type(target_layer).__name__})")
 
     cam_engine = GradCAM3D(model, target_layer)
     heatmaps_patch = {}

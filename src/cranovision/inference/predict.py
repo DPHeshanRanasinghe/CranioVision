@@ -29,7 +29,9 @@ from ..models import (
 
 def _load_state_dict(model: torch.nn.Module, ckpt_path: Path) -> torch.nn.Module:
     """Load .pth state dict with graceful handling of DataParallel / wrappers."""
-    state = torch.load(ckpt_path, map_location=DEVICE, weights_only=True)
+    # Always deserialize checkpoints on CPU first. Loading directly to CUDA can
+    # briefly duplicate model weights on the GPU and OOM during ensemble demos.
+    state = torch.load(ckpt_path, map_location="cpu", weights_only=True)
     # If saved from DataParallel, keys start with 'module.'
     if any(k.startswith("module.") for k in state.keys()):
         state = {k.replace("module.", "", 1): v for k, v in state.items()}
