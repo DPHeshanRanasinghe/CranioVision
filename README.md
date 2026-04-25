@@ -2,9 +2,9 @@
 
 **AI-Assisted Clinical Platform for 3D Brain Tumor Segmentation, Uncertainty Quantification, and Explainable Volumetric Analysis**
 
-CranioVision is an end-to-end pipeline that takes multi-modal brain MRI volumes (T1, T1c, T2, FLAIR) and produces **clinically interpretable** tumor segmentations — including per-region volumes in cm³, voxel-level confidence estimates, and model attention heatmaps that explain *why* each prediction was made.
+CranioVision is an end-to-end pipeline that takes multi-modal brain MRI volumes (T1, T1c, T2, FLAIR) and produces **clinically interpretable** tumor segmentations from four independent prediction sources — three deep learning models plus a consensus ensemble — letting the radiologist choose which output to trust. Each prediction is paired with per-voxel confidence estimates, model attention heatmaps, and per-region tumor volumes in cm³.
 
-The project targets a genuine gap in current clinical tooling: there is no accessible, open platform combining automated 3D tumor segmentation with uncertainty quantification and XAI in a single deployable system. Commercial systems like BrainLab and iPlan are prohibitively expensive; open research prototypes (DSNet, TumorPrism3D) stop at the inference stage and lack safety features.
+The project targets a real gap in clinical tooling: there is no accessible, open platform combining automated 3D tumor segmentation with multi-model second-opinion logic, uncertainty quantification, and XAI in one deployable system. Commercial systems (BrainLab, iPlan) are prohibitively expensive; open research prototypes (DSNet, TumorPrism3D) stop at single-model inference.
 
 ---
 
@@ -12,42 +12,49 @@ The project targets a genuine gap in current clinical tooling: there is no acces
 
 | Capability | What it does | Why it matters clinically |
 |---|---|---|
-| **3D segmentation** | Predicts edema, enhancing tumor, necrotic core on isotropic MRI | Automates a 30-60 min manual task |
-| **Volume quantification** | Per-region tumor volume in cm³ | Required for RANO tumor response assessment |
-| **MC Dropout uncertainty** | Per-voxel confidence via 20× stochastic forward passes | Flags unreliable predictions for radiologist review |
-| **Grad-CAM XAI** | Shows *what* the model attends to for each class | Builds clinical trust; validates model is not looking at noise |
-| **Ensemble voting** | Combines 3 architectures (Attention U-Net, SwinUNETR, nnU-Net-style) | Reduces catastrophic failures, improves Dice by 3-8 points |
+| **3-model segmentation** | Predicts tumor regions with Attention U-Net, SwinUNETR, and nnU-Net-style DynUNet | Three independent opinions — radiologist sees if models agree |
+| **Weighted ensemble** | Combines all three via Dice-proportional soft voting | Provides a fourth "consensus" prediction with built-in confidence signal |
+| **Volume quantification** | Per-region tumor volume in cm³ with 7.5% mean relative error vs. ground truth | Required for RANO tumor response assessment |
+| **MC Dropout uncertainty** | Per-voxel confidence via 5–20 stochastic forward passes | Flags unreliable predictions for radiologist review |
+| **Grad-CAM XAI** | Shows what the model attends to for each tumor class | Builds clinical trust; validates model is not looking at noise |
+| **Model agreement map** | Highlights voxels where all 3 models agree vs. disagree | Direct visual signal of which regions warrant manual review |
 
 ---
 
-## 📊 Results (BraTS 2024 small subset, 140 train / 30 val / 30 test)
+## 📊 Final Results (BraTS 2024 small subset, 140 train / 30 val / 30 test)
 
-### Individual model performance
+### Per-model performance on test set (n=30)
 
-| Model | Val Dice | Test Dice (mean) | Edema | Enhancing | Necrotic |
-|---|---|---|---|---|---|
-| Attention U-Net | 0.7642 | 0.7308 | 0.858 | 0.676 | 0.658 |
-| SwinUNETR | **0.8432** | *TBD* | 0.899 | 0.796 | 0.835 |
-| nnU-Net-style DynUNet | *in progress* | *TBD* | — | — | — |
-| **Ensemble (3-model)** | *TBD* | *TBD* | — | — | — |
+| Model | Params | Val Dice | Test mean Dice | Edema | Enhancing | Necrotic |
+|---|---|---|---|---|---|---|
+| Attention U-Net | 23.6M | 0.7642 | 0.7308 | 0.858 | 0.676 | 0.658 |
+| **SwinUNETR** ⭐ | 62.2M | 0.8219 | **0.7929** | **0.903** | **0.721** | **0.755** |
+| nnU-Net DynUNet | 31.4M | 0.7562 | 0.6925 | 0.845 | 0.560 | 0.672 |
+| **Ensemble (3-model)** | — | — | 0.7853 | 0.906 | 0.690 | 0.760 |
 
-*SwinUNETR validation at epoch 90. nnU-Net training in progress.*
+⭐ SwinUNETR is the strongest single model. The ensemble matches its performance closely (within 1%) and adds an agreement-based confidence signal not available from any single model.
 
-### BraTS standard region Dice (Attention U-Net test set)
+### BraTS standard region Dice (test set)
 
-| Region | Mean | Std |
-|---|---|---|
-| Whole Tumor (WT) | 0.862 | ±0.124 |
-| Tumor Core (TC) | 0.711 | ±0.301 |
-| Enhancing Tumor (ET) | 0.676 | ±0.331 |
+| Region | Attention U-Net | SwinUNETR | nnU-Net | Ensemble |
+|---|---|---|---|---|
+| Whole Tumor (WT) | 0.862 | 0.912 | 0.870 | **0.914** |
+| Tumor Core (TC) | 0.711 | 0.810 | 0.745 | 0.806 |
+| Enhancing Tumor (ET) | 0.676 | 0.721 | 0.560 | 0.690 |
 
-### Uncertainty and explainability (sample case)
+### Multi-model agreement (test set)
 
 | Metric | Value |
 |---|---|
-| Mean voxel confidence | **0.9763** |
-| Uncertain-voxel fraction | 0.15% |
-| Grad-CAM signal-to-background ratio (enhancing) | **14.8×** |
+| Mean unanimous voxel fraction | **99.33%** |
+| Minimum unanimous voxel fraction (hardest case) | 98.39% |
+| Mean volume relative error vs. ground truth | 7.47% |
+
+The very high agreement across three architecturally diverse models (CNN, Transformer, Residual U-Net) is itself a clinically valuable signal. When all three models agree on a voxel, the prediction can be trusted deeply. The 0.7% of voxels where models disagree are typically tumor boundaries — exactly where radiologist review adds the most value.
+
+### Why we present all 4 predictions, not just the ensemble
+
+Our test-set evaluation shows the Dice-weighted ensemble achieves 0.7853 — statistically equivalent to SwinUNETR alone (0.7929). When one model is significantly stronger than its partners, classical ensembling provides minimal Dice gain. **We therefore use the ensemble not to maximize Dice, but as a consensus signal.** All four predictions (three models + ensemble) are presented in the clinical interface; the radiologist decides which output to use, with explicit visualization of where they agree and disagree.
 
 ---
 
@@ -61,31 +68,32 @@ The project targets a genuine gap in current clinical tooling: there is no acces
               │        Preprocessing (MONAI)            │
               │  • Orientation → RAS                     │
               │  • Z-score normalization (per-modality)  │
-              │  • Foreground crop → 160×192×160         │
+              │  • Foreground crop                       │
               └─────────────────────────────────────────┘
                                     │
            ┌────────────────────────┼────────────────────────┐
            ▼                        ▼                        ▼
   ┌────────────────┐      ┌─────────────────┐      ┌────────────────┐
   │ Attention U-Net│      │   SwinUNETR      │      │ nnU-Net-style  │
-  │   (23.6M)      │      │   (62.2M)        │      │   (31.4M)      │
+  │    (23.6M)     │      │    (62.2M)       │      │    (31.4M)     │
   └────────────────┘      └─────────────────┘      └────────────────┘
            │                        │                        │
            └────────────────────────┼────────────────────────┘
                                     ▼
               ┌─────────────────────────────────────────┐
-              │   Weighted soft voting (ensemble)       │
+              │   Dice-weighted soft voting (ensemble)  │
               └─────────────────────────────────────────┘
                                     │
-           ┌────────────────────────┼────────────────────────┐
-           ▼                        ▼                        ▼
-  ┌────────────────┐      ┌─────────────────┐      ┌────────────────┐
-  │  Segmentation  │      │   MC Dropout    │      │   Grad-CAM     │
-  │  + volumes cm³ │      │   uncertainty   │      │   attention    │
-  └────────────────┘      └─────────────────┘      └────────────────┘
+       ┌────────────────────┬───────┴────────┬─────────────────────┐
+       ▼                    ▼                ▼                     ▼
+  ┌──────────┐      ┌────────────┐    ┌────────────┐      ┌──────────────┐
+  │ Volumes  │      │ MC Dropout │    │  Grad-CAM  │      │  Agreement   │
+  │  (cm³)   │      │ uncertainty│    │ explainer  │      │     map      │
+  └──────────┘      └────────────┘    └────────────┘      └──────────────┘
                                     │
                                     ▼
-                        Clinical report + 3D viewer
+              Radiologist interface — all 4 predictions shown,
+              user selects which to trust per case
 ```
 
 ---
@@ -95,32 +103,36 @@ The project targets a genuine gap in current clinical tooling: there is no acces
 ```
 CranioVision/
 ├── src/cranovision/
-│   ├── config.py                     Paths + hyperparameters (single source of truth)
+│   ├── config.py                     Paths + hyperparameters
 │   ├── data/
 │   │   ├── dataset.py                BraTS loader + train/val/test splits
 │   │   └── transforms.py             MONAI preprocessing + augmentation
 │   ├── models/
 │   │   ├── attention_unet.py         MONAI AttentionUnet factory
 │   │   ├── swin_unetr.py             MONAI SwinUNETR factory
-│   │   └── nnunet_model.py           DynUNet with nnU-Net-style plan
+│   │   └── nnunet_model.py           DynUNet with nnU-Net plan
 │   ├── training/
-│   │   ├── metrics.py                Dice + HD95 + BraTS region metrics
-│   │   └── trainer.py                Unified training loop (AMP, sliding window val)
+│   │   ├── metrics.py                Dice + BraTS region metrics
+│   │   └── trainer.py                Unified training loop
 │   └── inference/
-│       ├── predict.py                Single-model inference + volume estimation
-│       ├── mc_dropout.py             Stochastic uncertainty quantification
+│       ├── predict.py                Single-model inference + volumes
+│       ├── mc_dropout.py             Stochastic uncertainty
 │       ├── grad_cam.py               3D patch-based Grad-CAM
-│       └── ensemble.py               Weighted soft voting + agreement analysis
+│       └── ensemble.py               Weighted soft voting + agreement
 ├── notebooks/
-│   ├── train_attention_unet.ipynb    Training pipeline
-│   ├── train_swin_unetr.ipynb        Training pipeline
-│   ├── train_nnunet.ipynb            Training pipeline
-│   ├── inference_attention_unet.ipynb  Per-case inference demo
+│   ├── train_*.ipynb                 Training notebooks (3 models)
+│   ├── inference_*.ipynb             Per-model + ensemble test eval
+│   ├── *_demo.ipynb                  Per-model demo notebooks
 │   ├── mc_dropout_viz.ipynb          Uncertainty visualization
 │   ├── gradcam_viz.ipynb             XAI heatmap visualization
-│   └── full_demo.ipynb               Complete pipeline on one case
+│   ├── single_model_demo.ipynb       Single-model pipeline demo
+│   ├── full_demo.ipynb               Full 3-model ensemble pipeline
+│   ├── inference_ensemble.ipynb      Ensemble test-set evaluation
+│   └── comparison_report.ipynb       Side-by-side model comparison
+├── tests/
+│   └── test_inference.py             pytest suite (22/22 passing)
 ├── models/                           Checkpoints (gitignored)
-├── outputs/                          Predictions, curves, figures
+├── outputs/                          Predictions, curves, JSON reports
 ├── data/                             BraTS data (gitignored)
 └── requirements.txt
 ```
@@ -144,17 +156,22 @@ conda activate cranovision
 pip install -r requirements.txt
 ```
 
-### Running inference on a trained model
+### Running the full pipeline
 
 ```bash
-# Place your checkpoint in models/ — e.g. attention_unet_best.pth
-python -m src.cranovision.inference.predict
+# Place all 3 trained checkpoints in models/
+# Run the full 3-model ensemble pipeline on a single case
+jupyter lab notebooks/full_demo.ipynb
+
+# Or evaluate the ensemble across the entire test set
+jupyter lab notebooks/inference_ensemble.ipynb
 ```
 
-### Running the full clinical demo
+### Running tests
 
 ```bash
-jupyter lab notebooks/full_demo.ipynb
+pytest -m "not slow"   # 22 fast tests (~1 min)
+pytest                 # full suite incl. GPU inference (~5 min)
 ```
 
 ---
@@ -164,35 +181,39 @@ jupyter lab notebooks/full_demo.ipynb
 CranioVision uses a **local-code / cloud-train** workflow:
 
 1. All code lives in the repo — models, training notebooks, inference scripts
-2. Training runs on Kaggle T4 GPU (16GB free tier) via a small *launcher* notebook that clones the repo, installs dependencies, and executes the in-repo training notebook
+2. Training runs on Kaggle T4 GPU (16GB free tier) via a small launcher notebook that clones the repo, installs dependencies, and executes the in-repo training notebook
 3. Trained checkpoints are downloaded back to local `models/` for inference
 
-Each architecture lives on its own feature branch (`feature/attention-unet`, `feature/SwinUNETR`, `feature/nnU-Net`) and merges into `dev` for ensemble work. This keeps experiments isolated while sharing the same data and metric code.
+Each architecture lives on its own feature branch (`feature/attention-unet`, `feature/SwinUNETR`, `feature/nnU-Net`) and merges into `dev` for ensemble work.
 
 ---
 
 ## 🔬 Design decisions
 
-**Option B for nnU-Net.** We use MONAI's `DynUNet` with nnU-Net-style hyperparameters inside our unified training framework, rather than invoking the full `nnunetv2` CLI. This costs 2-3 Dice points in isolation but keeps a single training/inference interface across all three models — critical for the ensemble, MC Dropout, and Grad-CAM to work uniformly. The ensemble voting reliably recovers those 2-3 points.
+**Three architecturally diverse models, not three identical ones.** Attention U-Net (CNN with attention gates), SwinUNETR (Transformer encoder), and DynUNet (residual U-Net) make different errors on different cases. This diversity is what makes the agreement signal meaningful — three identical models would always agree.
 
-**128³ training patches, full-volume inference.** Training uses random 128³ crops with heavy augmentation for throughput. Inference uses a Gaussian-weighted sliding window over the full ~160³ volume for smooth segmentation at edges.
+**Dice-proportional ensemble weights, not equal voting.** Each model's vote is weighted by its validation Dice (SwinUNETR ≈ 0.35, Attention U-Net ≈ 0.33, nnU-Net ≈ 0.32). Equal voting would give the weakest model too much influence.
 
-**MC Dropout over deep-ensemble uncertainty.** MC Dropout requires only a single trained model and works for any architecture with dropout layers — far cheaper than training many models. 20 stochastic passes give publication-grade variance estimates.
+**Ensemble for confidence, not raw performance.** When one model is significantly stronger than its partners, classical ensembling provides minimal Dice gain. We use the ensemble's agreement statistic as a clinical confidence indicator — when all three models agree on a voxel, that voxel can be trusted; disagreement flags review.
 
-**Patch-based Grad-CAM.** Full-volume Grad-CAM requires ~7GB of gradient storage. We locate the tumor via a cheap forward pass, crop a 128³ patch around it, compute Grad-CAM on that patch, and stitch back. Fits in 2GB with no loss of useful signal.
+**MC Dropout over deep-ensemble uncertainty.** Single trained model, multiple stochastic passes. Cheaper than training a second ensemble and equally informative for boundary uncertainty.
+
+**Patch-based Grad-CAM.** Full-volume Grad-CAM requires ~7GB of gradient storage. We locate the tumor via a cheap forward pass, crop a 128³ patch around it, compute Grad-CAM there, and stitch back. Fits in 2GB.
+
+**Memory-efficient inference for 4GB GPUs.** Inference loads one model at a time. Predictions are softmax-saved to disk, models are freed, and final voting happens on CPU. The full 3-model ensemble runs on a GTX 1650 4GB without memory pressure.
 
 ---
 
 ## 📖 Models
 
 ### Attention U-Net (Oktay et al., 2018)
-Standard U-Net with attention gates at each skip connection. The gates learn to suppress irrelevant features (skull, healthy tissue) and emphasize tumor regions. Good baseline for diffuse structures like edema. High recall on whole tumor.
+Standard U-Net with attention gates at each skip connection. The gates suppress irrelevant features (skull, healthy tissue) and emphasize tumor regions. Strong baseline for diffuse structures like edema. High recall on whole tumor.
 
 ### SwinUNETR (Hatamizadeh et al., 2022)
-Swin Transformer encoder paired with a CNN decoder. The transformer's self-attention captures global context — especially useful for small enhancing-tumor cores that conventional CNNs struggle with. Consistently tops BraTS leaderboards.
+Swin Transformer encoder paired with a CNN decoder. The transformer's self-attention captures global context — especially useful for small enhancing-tumor cores that conventional CNNs struggle with. Consistently tops BraTS leaderboards. **Strongest single model in our pipeline.**
 
 ### nnU-Net-style DynUNet (Isensee et al., 2021)
-Residual-block encoder/decoder with instance normalization. Not the full nnU-Net framework, but uses its architectural plan for brain MRI (6-level encoder, filter schedule 32→320, deep supervision). Contributes a stable third vote to the ensemble with different inductive biases.
+Residual-block encoder/decoder with instance normalization. Uses nnU-Net's architectural plan for brain MRI (6-level encoder, filter schedule 32→320, deep supervision). Provides architectural diversity to the ensemble — different inductive biases, different failure modes.
 
 ---
 
@@ -205,6 +226,7 @@ Residual-block encoder/decoder with instance normalization. Not the full nnU-Net
 | Volume IO | nibabel, SimpleITK |
 | Visualization | matplotlib, Plotly (Mesh3d), scikit-image |
 | Experiment tracking | JSON histories + matplotlib curves |
+| Testing | pytest |
 | Version control | Git + GitHub (multi-branch workflow) |
 | Compute | Local GTX 1650 (dev), Kaggle T4 (training) |
 
@@ -212,18 +234,35 @@ Residual-block encoder/decoder with instance normalization. Not the full nnU-Net
 
 ## 📅 Project status
 
-- [x] Foundation (data, training, metrics)
-- [x] All 3 model architectures coded
-- [x] Attention U-Net trained (0.76 val / 0.73 test mean Dice)
-- [x] SwinUNETR trained (0.84 val Dice)
-- [ ] nnU-Net training (in progress)
-- [x] Inference + volume quantification
+### Phase 1 — Foundation + Training (✅ complete)
+- [x] Data pipeline (loaders, splits, transforms)
+- [x] Unified trainer + metrics + sliding-window val
+- [x] Three model architectures coded
+- [x] Attention U-Net trained (0.764 val / 0.731 test)
+- [x] SwinUNETR trained (0.822 val / 0.793 test)
+- [x] nnU-Net DynUNet trained (0.756 val / 0.693 test)
+
+### Phase 2 — Inference + XAI + Ensemble (✅ complete)
+- [x] Per-model inference + volume quantification
 - [x] MC Dropout uncertainty
-- [x] Grad-CAM explainability
-- [x] Ensemble voting code (awaiting all 3 checkpoints)
-- [ ] Atlas registration (MNI152) — Phase 3
-- [ ] RANO criteria assessment — Phase 3
-- [ ] FastAPI backend + web viewer — Phase 4
+- [x] Patch-based Grad-CAM explainability
+- [x] Weighted soft-voting ensemble + agreement analysis
+- [x] Memory-efficient pipeline for 4GB GPUs
+- [x] Full demo notebook (3-model ensemble + uncertainty + XAI)
+- [x] Ensemble test-set evaluation (0.7853 mean Dice, 99.33% agreement)
+- [x] 22/22 pytest test suite passing
+
+### Phase 3 — Clinical Intelligence (in progress)
+- [ ] Atlas registration (MNI152) — anatomical tumor location
+- [ ] Per-model XAI extension (Grad-CAM for SwinUNETR + nnU-Net)
+- [ ] Consensus attention map across all 3 models
+- [ ] Structured PDF clinical report (radiologist workflow)
+
+### Phase 4 — Clinical Platform (planned)
+- [ ] FastAPI backend
+- [ ] React + VTK.js frontend (3D viewer with model selector)
+- [ ] DICOM import/export
+- [ ] Hospital workflow integration
 
 ---
 
