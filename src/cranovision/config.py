@@ -89,6 +89,12 @@ CHECKPOINT_PATHS = {
     "nnunet"       : MODELS_DIR / "nnunet_best.pth",
 }
 
+# Atlas paths
+ATLAS_DIR = PROJECT_ROOT / "atlas_data"
+ATLAS_CACHE_DIR = OUTPUTS_DIR / "atlas_cache"
+
+ATLAS_DIR.mkdir(parents=True, exist_ok=True)
+ATLAS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 def print_config():
     """Pretty-print the current config — call this at the top of every notebook."""
