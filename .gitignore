@@ -48,6 +48,13 @@ ENV/
 .vscode/
 .idea/
 *.swp
+
+# ── Frontend (Next.js) ──
+frontend/node_modules/
+frontend/.next/
+frontend/.env.local
+frontend/.env.*.local
+frontend/npm-debug.log
 *.swo
 *~
 
