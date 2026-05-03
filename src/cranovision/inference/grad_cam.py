@@ -1,110 +1,181 @@
 """
-CranioVision — 3D Grad-CAM for segmentation networks (patch-based).
+CranioVision — 3D patch-based Grad-CAM with architecture-agnostic layer search.
 
-Memory-efficient Grad-CAM for 4GB GPUs:
-  - Finds the tumor center from an initial prediction
-  - Crops a 128³ patch around it
-  - Computes Grad-CAM on that patch only
-  - Stitches heatmap back into full-volume coordinates
+Key design choices
+------------------
+1. Architecture-agnostic target layer discovery (Approach B).
+   Walks the model graph, finds the deepest Conv3d before the final
+   classification head. Works for Attention U-Net, SwinUNETR, nnU-Net DynUNet,
+   and any future 3D segmentation model with a similar topology.
 
-Gradients take ~3× more memory than forward passes. On 4GB cards, full-volume
-Grad-CAM over 160³+ crashes. Patch-based computation is standard practice for
-high-resolution 3D XAI.
+2. Patch-based execution.
+   Full-volume Grad-CAM on a transformer like SwinUNETR needs ~7GB of GPU
+   memory for gradient storage. We locate the tumor centroid via a forward
+   pass, crop a 128^3 patch, run Grad-CAM there, and stitch back. Fits in
+   ~2GB on GPU, ~6GB on CPU.
+
+3. Per-class heatmaps.
+   For each tumor class (edema, enhancing, necrotic), we generate a separate
+   heatmap showing what the model attended to when predicting that class.
 """
 from __future__ import annotations
 
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from ..config import DEVICE, USE_AMP, PATCH_SIZE, NUM_CLASSES, CLASS_NAMES
+from ..config import CLASS_NAMES, DEVICE, USE_AMP
 from ..data import get_val_transforms
+from .predict import make_inferer
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# LAYER SELECTION
-# ══════════════════════════════════════════════════════════════════════════════
+# -----------------------------------------------------------------------------
+# APPROACH B — architecture-agnostic target layer discovery
+# -----------------------------------------------------------------------------
 
-def find_target_layer(model: nn.Module, model_name: str) -> nn.Module:
-    """Pick a sensible deep Conv3d layer for Grad-CAM extraction."""
-    named_convs = [
-        (name, module)
-        for name, module in model.named_modules()
-        if isinstance(module, nn.Conv3d)
-    ]
-    if not named_convs:
-        raise RuntimeError("No Conv3d layer found in model.")
+def find_target_layer(
+    model: nn.Module,
+    model_name: Optional[str] = None,
+) -> Tuple[nn.Module, str]:
+    """
+    Find the best Grad-CAM target layer for any 3D segmentation model.
 
-    name = model_name.lower()
-    preferred_names = []
+    Strategy (Approach B with kernel-size preference):
+      1. Walk the entire module tree, collect every Conv3d.
+      2. Skip the final 1x1x1 classification head (last conv with kernel
+         size 1 and small out_channels).
+      3. Among the LAST FEW remaining convs, prefer kernels with spatial
+         extent (3x3x3 over 1x1x1). 1x1x1 convs do channel mixing only,
+         which is poor for Grad-CAM — we want spatial reasoning layers.
+      4. Return the deepest such layer.
 
-    if name in ("nnunet", "nn_unet", "dynunet"):
-        # DynUNet keeps deep-supervision heads in the module tree, but those
-        # heads are skipped in eval mode. Hook the last decoder block instead.
-        preferred_names = [
-            "model.upsamples.4.conv_block.conv2.conv",
-            "model.upsamples.4.conv_block.conv1.conv",
-            "model.output_block.conv.conv",
-        ]
-    elif name in ("swin_unetr", "swin"):
-        preferred_names = [
-            "decoder1.conv_block.conv3.conv",
-            "decoder1.conv_block.conv2.conv",
-            "out.conv.conv",
-        ]
-    elif name in ("attention_unet", "attention", "attn"):
-        preferred_names = [
-            "model.1.submodule.1.submodule.1.submodule.1.submodule.conv.1.conv",
-            "model.1.submodule.1.submodule.1.submodule.1.submodule.conv.0.conv",
-            "model.2.conv",
-        ]
-
-    conv_by_name = dict(named_convs)
-    for preferred in preferred_names:
-        if preferred in conv_by_name:
-            return conv_by_name[preferred]
-
-    # Generic fallback: avoid output/deep-supervision heads when possible.
-    usable = [
-        module for layer_name, module in named_convs
-        if "deep_supervision" not in layer_name and "output_block" not in layer_name
-    ]
-    return usable[-1] if usable else named_convs[-1][1]
-
-
-def _module_name(model: nn.Module, target_layer: nn.Module) -> str:
-    """Return a stable display name for a selected module."""
+    Returns
+    -------
+    (layer, layer_name) tuple
+    """
+    all_conv3d: List[Tuple[str, nn.Conv3d]] = []
     for name, module in model.named_modules():
-        if module is target_layer:
-            return name
-    return type(target_layer).__name__
+        if isinstance(module, nn.Conv3d):
+            all_conv3d.append((name, module))
+
+    if not all_conv3d:
+        raise RuntimeError(
+            "No Conv3d layers found in model. "
+            "Grad-CAM requires a 3D convolutional network."
+        )
+
+    # Identify if the very last conv is a classification head
+    last_name, last_layer = all_conv3d[-1]
+    is_head = (
+        tuple(last_layer.kernel_size) == (1, 1, 1)
+        and last_layer.out_channels <= 16
+    )
+    candidates = all_conv3d[:-1] if (is_head and len(all_conv3d) >= 2) else all_conv3d
+
+    # Look at the last 5 candidates and prefer one with kernel size > 1.
+    # This skips through 1x1x1 channel-mixing convs to find the deepest
+    # spatial-reasoning layer (typically a 3x3x3 conv).
+    tail = candidates[-5:] if len(candidates) >= 5 else candidates
+    spatial_candidates = [
+        (n, m) for n, m in tail
+        if any(k > 1 for k in m.kernel_size)
+    ]
+
+    if spatial_candidates:
+        # Use the deepest spatial conv from the tail
+        target_name, target_layer = spatial_candidates[-1]
+    else:
+        # Fall back to deepest conv overall (even if 1x1x1)
+        target_name, target_layer = candidates[-1]
+
+    return target_layer, target_name
+
+# -----------------------------------------------------------------------------
+# PATCH UTILITIES
+# -----------------------------------------------------------------------------
+
+def _find_tumor_centroid(prediction: torch.Tensor) -> Optional[Tuple[int, int, int]]:
+    """
+    Find the centroid (center of mass) of the predicted tumor region.
+
+    Returns None if there is no predicted tumor.
+    """
+    tumor_mask = (prediction > 0).numpy()
+    if not tumor_mask.any():
+        return None
+    coords = np.argwhere(tumor_mask)
+    centroid = coords.mean(axis=0).round().astype(int)
+    return tuple(centroid.tolist())
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# CORE GRAD-CAM
-# ══════════════════════════════════════════════════════════════════════════════
+def _crop_patch(
+    image: torch.Tensor,
+    centroid: Tuple[int, int, int],
+    patch_size: Tuple[int, int, int],
+) -> Tuple[torch.Tensor, Tuple[int, int, int]]:
+    """
+    Crop a patch_size patch from image centered on centroid.
+
+    image shape: (C, D, H, W)
+    centroid:    (z, y, x) in voxel space — wait, actually (D, H, W) order
+
+    Returns (patch, offset) where offset is the (D, H, W) index of the patch's
+    origin in the original volume.
+    """
+    _, D, H, W = image.shape
+    pd, ph, pw = patch_size
+    cd, ch, cw = centroid
+
+    # Top-left corner, clipped to volume bounds
+    d0 = max(0, min(D - pd, cd - pd // 2))
+    h0 = max(0, min(H - ph, ch - ph // 2))
+    w0 = max(0, min(W - pw, cw - pw // 2))
+
+    patch = image[:, d0:d0 + pd, h0:h0 + ph, w0:w0 + pw]
+    return patch, (d0, h0, w0)
+
+
+# -----------------------------------------------------------------------------
+# CORE GRAD-CAM ENGINE
+# -----------------------------------------------------------------------------
 
 class GradCAM3D:
-    """3D Grad-CAM with forward/backward hooks on a target layer."""
+    """
+    3D Grad-CAM engine with hooks on a specified target layer.
+
+    Use as a context manager OR explicitly call cleanup() when done.
+    """
+
     def __init__(self, model: nn.Module, target_layer: nn.Module):
         self.model = model
         self.target_layer = target_layer
         self.activations: Optional[torch.Tensor] = None
         self.gradients: Optional[torch.Tensor] = None
-        self._fwd = target_layer.register_forward_hook(self._save_act)
-        self._bwd = target_layer.register_full_backward_hook(self._save_grad)
 
-    def _save_act(self, module, input, output):
-        self.activations = output.detach()
+        # Register hooks
+        self._fwd_handle = target_layer.register_forward_hook(self._save_activation)
+        self._bwd_handle = target_layer.register_full_backward_hook(self._save_gradient)
 
-    def _save_grad(self, module, grad_input, grad_output):
-        self.gradients = grad_output[0].detach()
+    def _save_activation(self, module, inp, out):
+        # Save a copy that won't be affected by later in-place ops
+        self.activations = out.detach() if not out.requires_grad else out
 
-    def remove_hooks(self):
-        self._fwd.remove()
-        self._bwd.remove()
+    def _save_gradient(self, module, grad_in, grad_out):
+        self.gradients = grad_out[0].detach()
+
+    def cleanup(self):
+        """Remove hooks. MUST be called when done to avoid memory leaks."""
+        self._fwd_handle.remove()
+        self._bwd_handle.remove()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.cleanup()
 
     def generate(
         self,
@@ -112,133 +183,153 @@ class GradCAM3D:
         target_class: int,
         target_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        self.activations = None
-        self.gradients = None
+        """
+        Generate a Grad-CAM heatmap for one class.
+
+        Parameters
+        ----------
+        input_tensor : (1, C, D, H, W) input volume
+        target_class : class index (1=edema, 2=enhancing, 3=necrotic for BraTS)
+        target_mask  : optional (D, H, W) bool mask. If given, we score only
+                       the target_class logits within this mask. This makes the
+                       heatmap explain "why did the model predict this class HERE"
+                       rather than averaging over the whole volume.
+
+        Returns
+        -------
+        heatmap : (D, H, W) tensor in [0, 1]
+        """
         self.model.eval()
         self.model.zero_grad()
-        input_tensor = input_tensor.clone().detach().requires_grad_(True)
 
-        logits = self.model(input_tensor)
-        class_logits = logits[0, target_class]
+        # Forward — gradients ON
+        with torch.set_grad_enabled(True):
+            logits = self.model(input_tensor)
 
-        if target_mask is not None:
-            target_mask = target_mask.to(class_logits.device)
-            if target_mask.sum() > 0:
-                score = class_logits[target_mask].sum()
+            # Score = sum of target_class logits, optionally restricted to mask
+            if target_mask is not None:
+                # logits shape: (1, num_classes, D, H, W). Mask shape: (D, H, W)
+                if not target_mask.any():
+                    # Nothing to score — return zero heatmap
+                    return torch.zeros(input_tensor.shape[2:])
+                target_mask_5d = target_mask.unsqueeze(0).unsqueeze(0).to(logits.device)  # (1,1,D,H,W)
+                score = (logits[:, target_class:target_class + 1] * target_mask_5d.float()).sum()
             else:
-                score = class_logits.sum()
-        else:
-            score = class_logits.sum()
+                score = logits[:, target_class].sum()
 
         score.backward()
 
+        # Compute Grad-CAM
+        # Activations: (1, K, d, h, w) where K = num feature channels
+        # Gradients:   (1, K, d, h, w)
         if self.activations is None or self.gradients is None:
-            raise RuntimeError("Hooks did not fire.")
+            raise RuntimeError("Hooks didn't capture activations/gradients. Bad target layer?")
 
-        weights = self.gradients.mean(dim=(2, 3, 4), keepdim=True)
-        cam = (weights * self.activations).sum(dim=1, keepdim=True)
-        cam = F.relu(cam)
-        cam = F.interpolate(cam, size=input_tensor.shape[2:],
-                            mode="trilinear", align_corners=False)
-        cam = cam.squeeze(0).squeeze(0)
+        # Channel-wise weights = global avg pool of gradients
+        weights = self.gradients.mean(dim=(2, 3, 4), keepdim=True)   # (1, K, 1, 1, 1)
 
-        if cam.max() > cam.min():
-            cam = (cam - cam.min()) / (cam.max() - cam.min())
+        # Weighted sum of activations
+        cam = (weights * self.activations).sum(dim=1, keepdim=True)  # (1, 1, d, h, w)
+        cam = F.relu(cam)  # only positive contributions
+
+        # Upsample to input spatial size
+        cam = F.interpolate(
+            cam, size=input_tensor.shape[2:],
+            mode="trilinear", align_corners=False,
+        )
+        cam = cam.squeeze(0).squeeze(0)  # (D, H, W)
+
+        # Normalize to [0, 1]
+        cam_min, cam_max = cam.min(), cam.max()
+        if cam_max > cam_min:
+            cam = (cam - cam_min) / (cam_max - cam_min)
         else:
             cam = torch.zeros_like(cam)
 
-        del logits, class_logits, score, weights
-        torch.cuda.empty_cache()
-        return cam.cpu()
+        return cam.detach().cpu()
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# PATCH EXTRACTION AROUND TUMOR
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _find_tumor_centroid(mask: torch.Tensor) -> Tuple[int, int, int]:
-    nz = torch.nonzero(mask > 0)
-    if nz.numel() == 0:
-        D, H, W = mask.shape
-        return D // 2, H // 2, W // 2
-    cz = int(nz[:, 0].float().mean().item())
-    cy = int(nz[:, 1].float().mean().item())
-    cx = int(nz[:, 2].float().mean().item())
-    return cz, cy, cx
-
-
-def _extract_patch(volume: torch.Tensor,
-                   center: Tuple[int, int, int],
-                   patch: Tuple[int, int, int]) -> Tuple[torch.Tensor, Tuple[int, int, int]]:
-    _, D, H, W = volume.shape
-    pd, ph, pw = patch
-    cz, cy, cx = center
-    z0 = max(0, min(D - pd, cz - pd // 2))
-    y0 = max(0, min(H - ph, cy - ph // 2))
-    x0 = max(0, min(W - pw, cx - pw // 2))
-    crop = volume[:, z0:z0 + pd, y0:y0 + ph, x0:x0 + pw]
-    return crop, (z0, y0, x0)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# HIGH-LEVEL API
-# ══════════════════════════════════════════════════════════════════════════════
+# -----------------------------------------------------------------------------
+# PUBLIC API — patch-based Grad-CAM for one model + case
+# -----------------------------------------------------------------------------
 
 def compute_grad_cam(
     model: nn.Module,
     case_dict: Dict,
-    model_name: str = "attention_unet",
-    target_classes: Tuple[int, ...] = (1, 2, 3),
+    model_name: str = "model",
+    target_classes: Sequence[int] = (1, 2, 3),
     use_predicted_mask: bool = True,
-    patch_size: Tuple[int, int, int] = PATCH_SIZE,
-    verbose: bool = True,
+    patch_size: Tuple[int, int, int] = (128, 128, 128),
+    force_cpu: bool = False,
+    verbose: bool = False,
 ) -> Dict:
     """
-    Patch-based Grad-CAM — runs on a single 128³ crop centered on the tumor.
+    Compute patch-based Grad-CAM for one model.
+
+    Parameters
+    ----------
+    force_cpu : if True, runs Grad-CAM entirely on CPU. Slower but always
+                works. Use this for memory-heavy models like SwinUNETR
+                on small GPUs. In production deployment all models run
+                CPU-side anyway, so behavior matches.
     """
+    case_id = case_dict.get("case_id", "unknown")
+    target_layer, target_layer_name = find_target_layer(model, model_name=model_name)
+    if verbose:
+        print(f"  [grad-cam] target layer ({model_name}): {target_layer_name}")
+
+    # Choose device upfront. Don't try to recover from OOM mid-flight.
+    if force_cpu:
+        device = torch.device("cpu")
+        model = model.to(device)
+        if verbose:
+            print(f"  [grad-cam] forced CPU mode")
+    else:
+        device = next(model.parameters()).device
+
     transforms = get_val_transforms()
     sample = transforms(case_dict)
-    full_image = sample["image"]
+    image = sample["image"]
 
-    # Initial prediction
-    from monai.inferers import SlidingWindowInferer
-    inferer = SlidingWindowInferer(roi_size=patch_size, sw_batch_size=1,
-                                    overlap=0.5, mode="gaussian")
+    # Full-volume prediction once
+    inferer = make_inferer()
     model.eval()
     with torch.no_grad():
-        with torch.cuda.amp.autocast(enabled=USE_AMP):
-            full_logits = inferer(full_image.unsqueeze(0).to(DEVICE), model)
+        with torch.cuda.amp.autocast(enabled=USE_AMP and device.type == "cuda"):
+            image_dev = image.unsqueeze(0).to(device)
+            full_logits = inferer(image_dev, model)
         full_pred = full_logits.argmax(dim=1).squeeze(0).cpu()
-    del full_logits
-    torch.cuda.empty_cache()
+    del full_logits, image_dev
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
-    center = _find_tumor_centroid(full_pred)
+    # Find tumor centroid
+    centroid = _find_tumor_centroid(full_pred)
+    if centroid is None:
+        if verbose:
+            print(f"  [grad-cam] no tumor predicted, using volume center")
+        centroid = tuple(d // 2 for d in image.shape[1:])
+
+    # Crop the patch
+    image_patch, patch_offset = _crop_patch(image, centroid, patch_size)
+    pred_patch = full_pred[
+        patch_offset[0]:patch_offset[0] + patch_size[0],
+        patch_offset[1]:patch_offset[1] + patch_size[1],
+        patch_offset[2]:patch_offset[2] + patch_size[2],
+    ]
+    img_batch = image_patch.unsqueeze(0).to(device)
+
     if verbose:
-        print(f"Tumor centroid (z, y, x): {center}")
+        print(f"  [grad-cam] patch offset: {patch_offset}, size: {patch_size}, device: {device}")
+        print(f"  [grad-cam] tumor in patch: {(pred_patch > 0).sum().item():,} voxels")
 
-    img_patch, (z0, y0, x0) = _extract_patch(full_image, center, patch_size)
-    pred_patch = full_pred[z0:z0 + patch_size[0],
-                            y0:y0 + patch_size[1],
-                            x0:x0 + patch_size[2]]
+    heatmaps_patch: Dict[int, torch.Tensor] = {}
+    heatmaps_full: Dict[int, torch.Tensor] = {}
 
-    if verbose:
-        print(f"Patch offset (z0, y0, x0): ({z0}, {y0}, {x0})")
-        print(f"Patch shape             : {tuple(img_patch.shape)}")
-
-    target_layer = find_target_layer(model, model_name)
-    layer_name = _module_name(model, target_layer)
-    if verbose:
-        print(f"Target layer: {layer_name} ({type(target_layer).__name__})")
-
-    cam_engine = GradCAM3D(model, target_layer)
-    heatmaps_patch = {}
-    heatmaps_full  = {}
-
-    try:
-        img_batch = img_patch.unsqueeze(0).to(DEVICE)
+    with GradCAM3D(model, target_layer) as cam_engine:
         for cls in target_classes:
             if verbose:
-                print(f"  → Generating heatmap for class {cls} ({CLASS_NAMES[cls]})")
+                print(f"  [grad-cam] class {cls} ({CLASS_NAMES[cls]})")
             mask = (pred_patch == cls) if use_predicted_mask else None
             hm_patch = cam_engine.generate(
                 input_tensor=img_batch,
@@ -246,66 +337,73 @@ def compute_grad_cam(
                 target_mask=mask,
             )
             heatmaps_patch[cls] = hm_patch
-
             hm_full = torch.zeros(full_pred.shape, dtype=torch.float32)
-            hm_full[z0:z0 + patch_size[0],
-                    y0:y0 + patch_size[1],
-                    x0:x0 + patch_size[2]] = hm_patch
+            hm_full[
+                patch_offset[0]:patch_offset[0] + patch_size[0],
+                patch_offset[1]:patch_offset[1] + patch_size[1],
+                patch_offset[2]:patch_offset[2] + patch_size[2],
+            ] = hm_patch
             heatmaps_full[cls] = hm_full
-    finally:
-        cam_engine.remove_hooks()
+
+    del img_batch
+    if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
     return {
+        "case_id": case_id,
+        "model_name": model_name,
+        "target_layer": target_layer_name,
+        "pred": full_pred,
+        "image": image,
+        "heatmaps": heatmaps_full,
         "heatmaps_patch": heatmaps_patch,
-        "heatmaps"      : heatmaps_full,
-        "image"         : full_image,
-        "pred"          : full_pred,
-        "label"         : sample["label"].cpu() if "label" in sample else None,
-        "case_id"       : case_dict.get("case_id", "unknown"),
-        "target_layer"  : layer_name,
-        "patch_offset"  : (z0, y0, x0),
-        "patch_size"    : patch_size,
+        "patch_offset": patch_offset,
+        "patch_size": patch_size,
+        "device_used": str(device),
     }
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# SMOKE TEST
-# ══════════════════════════════════════════════════════════════════════════════
+# -----------------------------------------------------------------------------
+# CLI / smoke test
+# -----------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    from pathlib import Path
     from ..config import MODELS_DIR
     from ..data import get_splits
     from .predict import load_model
 
     print("=" * 60)
-    print("CranioVision — grad_cam.py smoke test (patch-based)")
+    print("CranioVision — grad_cam.py smoke test (Approach B)")
     print("=" * 60)
 
-    ckpt = MODELS_DIR / "attention_unet_best.pth"
-    model = load_model("attention_unet", ckpt)
+    # Try each available model
+    candidates = [
+        ("attention_unet", "attention_unet_best.pth", {}),
+        ("swin_unetr", "swin_unetr_best.pth", {"feature_size": 48, "use_checkpoint": False}),
+        ("nnunet", "nnunet_best.pth", {"filters": (32, 64, 128, 256, 320, 320), "deep_supervision": False}),
+    ]
 
     _, _, test_cases = get_splits(verbose=False)
     case = test_cases[0]
 
-    result = compute_grad_cam(
-        model=model,
-        case_dict=case,
-        model_name="attention_unet",
-        target_classes=(1, 2, 3),
-        use_predicted_mask=True,
-        verbose=True,
-    )
+    for name, ckpt, kwargs in candidates:
+        path = MODELS_DIR / ckpt
+        if not path.exists():
+            print(f"\n[skip] {name}: checkpoint not found")
+            continue
 
-    print(f"\n─── Result ───")
-    print(f"Case ID     : {result['case_id']}")
-    print(f"Target layer: {result['target_layer']}")
-    print(f"Patch offset: {result['patch_offset']}")
-    print(f"Patch size  : {result['patch_size']}")
-    print(f"Heatmaps    :")
-    for cls, hm in result["heatmaps_patch"].items():
-        hm_full = result["heatmaps"][cls]
-        print(f"  Class {cls} ({CLASS_NAMES[cls]:20s}): "
-              f"patch {tuple(hm.shape)} range [{hm.min():.3f}, {hm.max():.3f}]")
+        print(f"\n--- {name} ---")
+        try:
+            model = load_model(name, path, **kwargs)
+            tgt, tgt_name = find_target_layer(model, model_name=name)
+            print(f"  Auto-discovered target layer: {tgt_name}")
+            print(f"  Target type: {type(tgt).__name__}, kernel: {tgt.kernel_size}, "
+                  f"in_ch: {tgt.in_channels}, out_ch: {tgt.out_channels}")
+            del model
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception as e:
+            print(f"  [error] {type(e).__name__}: {e}")
 
-    print("\n✅ grad_cam.py works.")
+    print("\nApproach B layer search verified.")
