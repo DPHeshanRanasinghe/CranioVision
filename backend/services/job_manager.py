@@ -195,7 +195,22 @@ class JobManager:
                     f"Artifact save failed (viewer may be limited): {e}",
                 )
 
+            # Extract marching-cubes meshes (brain shell + per-class tumor)
+            # so the 3D viewer can load .glb files instead of raw NIfTI.
+            try:
+                progress_bridge("meshes", 98, "Extracting 3D meshes...")
+                self._save_mesh_artifacts(job)
+            except Exception as e:
+                progress_bridge(
+                    "warning", 99,
+                    f"Mesh extraction failed (viewer falls back): {e}",
+                )
+
             job.state = "done"
+            # Terminal progress event — closes SSE on the client and lifts the
+            # progress bar to 100%. Without this, the bar freezes at 98%
+            # (the meshes stage) since no later stage publishes.
+            progress_bridge("done", 100, "Analysis complete")
 
         except Exception as e:
             job.error = f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
@@ -264,6 +279,30 @@ class JobManager:
                     str(out_path),
                 )
 
+    def _save_mesh_artifacts(self, job: Job) -> None:
+        """
+        Build the MNI brain shell (cached process-wide) and per-class tumor
+        meshes from the cached registration. All four model tabs share the
+        same warped GT tumor mesh — Phase 4 design choice so the surfaces
+        always sit cleanly inside the atlas shell.
+        """
+        from services.mesh_extractor import extract_meshes_for_job
+
+        if job.result is None:
+            return
+
+        gt_mask_path = job.case_dict.get("label")
+        model_names = list(job.result.get("predictions", {}).keys())
+        if not model_names:
+            return
+
+        extract_meshes_for_job(
+            artifacts_dir=job.artifacts_dir,
+            case_id=job.case_id,
+            model_names=model_names,
+            gt_mask_path=gt_mask_path,
+        )
+
     async def run_xai(
         self, job_id: str, model_name: str
     ) -> Optional[Dict[str, Any]]:
@@ -291,13 +330,58 @@ class JobManager:
         job.xai_results[model_name] = xai
 
         # Save XAI heatmaps to disk for the 3D viewer
+        import traceback as _tb
         try:
             self._save_xai_artifacts(job, model_name, xai)
         except Exception as e:
-            # Non-fatal — XAI metadata still returned to caller
-            print(f"[xai] artifact save failed: {e}")
+            print(
+                f"[xai] artifact save failed: {type(e).__name__}: {e}\n"
+                f"{_tb.format_exc()}",
+                flush=True,
+            )
+
+        # Build the magma-coloured tumor mesh for the Plotly viewer.
+        try:
+            self._save_heatmap_mesh(job, model_name, xai)
+        except Exception as e:
+            print(
+                f"[xai] heatmap mesh build failed: {type(e).__name__}: {e}\n"
+                f"{_tb.format_exc()}",
+                flush=True,
+            )
 
         return xai
+
+    def _save_heatmap_mesh(
+        self, job: Job, model_name: str, xai: Dict[str, Any]
+    ) -> None:
+        """Build heatmap.glb (+ JSON sidecar) for `model_name`."""
+        import numpy as np
+        from services.mesh_extractor import extract_heatmap_mesh_for_job
+
+        if job.result is None or "predictions" not in job.result:
+            return
+        if "heatmaps" not in xai or not xai["heatmaps"]:
+            return
+
+        pred_tensor = job.result["predictions"].get(model_name)
+        if pred_tensor is None:
+            return
+        pred_np = (
+            pred_tensor.numpy() if hasattr(pred_tensor, "numpy") else np.asarray(pred_tensor)
+        ).astype(np.int16)
+
+        heatmaps_np: Dict[int, "np.ndarray"] = {}
+        for cls, hm in xai["heatmaps"].items():
+            arr = hm.numpy() if hasattr(hm, "numpy") else np.asarray(hm)
+            heatmaps_np[int(cls)] = arr.astype(np.float32)
+
+        extract_heatmap_mesh_for_job(
+            artifacts_dir=job.artifacts_dir,
+            model_name=model_name,
+            prediction=pred_np,
+            heatmaps_by_class=heatmaps_np,
+        )
 
     def _save_xai_artifacts(
         self, job: Job, model_name: str, xai: Dict[str, Any]

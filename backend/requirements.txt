@@ -4,3 +4,8 @@ uvicorn[standard]>=0.27
 python-multipart>=0.0.9   # for UploadFile support
 sse-starlette>=2.0
 pydantic>=2.5
+
+# 3D mesh extraction for the Three.js viewer (Task 1, Phase 4 Week 3)
+trimesh>=4.0
+pygltflib>=1.16
+fast-simplification>=0.1.7   # backend for trimesh.simplify_quadric_decimation

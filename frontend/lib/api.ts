@@ -20,12 +20,16 @@ const API_BASE = '/api';
 
 async function jsonOrThrow<T>(res: Response): Promise<T> {
   if (!res.ok) {
+    // Read body once as text — calling .json() then .text() locks the stream.
+    const raw = await res.text().catch(() => '');
     let detail = `HTTP ${res.status}`;
-    try {
-      const body = await res.json();
-      detail = body.detail || JSON.stringify(body);
-    } catch {
-      detail = `${detail}: ${await res.text()}`;
+    if (raw) {
+      try {
+        const body = JSON.parse(raw);
+        detail = body.detail || JSON.stringify(body);
+      } catch {
+        detail = `${detail}: ${raw}`;
+      }
     }
     throw new Error(detail);
   }
@@ -153,7 +157,15 @@ export async function triggerXai(
   jobId: string,
   modelName: ModelName,
 ): Promise<XaiResult> {
-  const res = await fetch(`${API_BASE}/jobs/${jobId}/explain`, {
+  // BYPASS the Next.js dev proxy for this call — Grad-CAM compute runs ~30s
+  // on GPU and the dev rewrite proxy closes the connection mid-stream,
+  // surfacing as a misleading HTTP 500. The await on the cancelled
+  // request also kills run_xai's cache write + mesh save (the thread-pool
+  // task itself completes, but its result is discarded), so the next click
+  // re-runs the whole computation. Same pattern SSE uses.
+  // Backend has CORS configured so direct POST works.
+  const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+  const res = await fetch(`${backendUrl}/jobs/${jobId}/explain`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ model_name: modelName }),
@@ -182,9 +194,11 @@ export function getReportDownloadUrl(jobId: string): string {
 }
 
 // -----------------------------------------------------------------------------
-// VIEWER ARTIFACT URLS — for Niivue
+// VIEWER ARTIFACT URLS
 // -----------------------------------------------------------------------------
 
+// NIfTI volumes (used by the legacy Niivue viewer + clinical PDF, kept around
+// because the backend still exposes them).
 export function getT1cUrl(jobId: string): string {
   return `${API_BASE}/jobs/${jobId}/t1c.nii.gz`;
 }
@@ -199,4 +213,39 @@ export function getHeatmapUrl(
   className: 'edema' | 'enhancing' | 'necrotic',
 ): string {
   return `${API_BASE}/jobs/${jobId}/xai/${modelName}/${className}.nii.gz`;
+}
+
+// GLB meshes (Three.js viewer — kept for back-compat / mesh download).
+export function getBrainMeshUrl(jobId: string): string {
+  return `${API_BASE}/jobs/${jobId}/meshes/brain.glb`;
+}
+
+export function getClassMeshUrl(
+  jobId: string,
+  modelName: ModelName,
+  className: string,
+): string {
+  return `${API_BASE}/jobs/${jobId}/meshes/${modelName}/${className}.glb`;
+}
+
+export function getMeshManifestUrl(jobId: string, modelName: ModelName): string {
+  return `${API_BASE}/jobs/${jobId}/meshes/${modelName}/manifest.json`;
+}
+
+// Plotly Mesh3d JSON sidecars ({x,y,z,i,j,k,intensity?}). Same geometry as
+// the GLBs, just in the shape Plotly wants.
+export function getBrainMeshJsonUrl(jobId: string): string {
+  return `${API_BASE}/jobs/${jobId}/meshes/brain.json`;
+}
+
+export function getClassMeshJsonUrl(
+  jobId: string,
+  modelName: ModelName,
+  className: string,
+): string {
+  return `${API_BASE}/jobs/${jobId}/meshes/${modelName}/${className}.json`;
+}
+
+export function getHeatmapMeshJsonUrl(jobId: string, modelName: ModelName): string {
+  return `${API_BASE}/jobs/${jobId}/meshes/${modelName}/heatmap.json`;
 }

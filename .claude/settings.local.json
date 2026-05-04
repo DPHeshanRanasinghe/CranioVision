@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git checkout *)",
+      "Bash(conda run *)",
+      "Bash(npm install *)",
+      "Bash(npm --prefix \"D:/2_ML PROJECTS/30. Brainstorm/CranioVision/frontend\" install three@^0.169.0 @react-three/fiber@^8.17.10 @react-three/drei@^9.114.0 @types/three@^0.169.0)",
+      "Bash(npm --prefix \"D:/2_ML PROJECTS/30. Brainstorm/CranioVision/frontend\" run type-check)",
+      "Bash(git stash *)",
+      "Bash(/c/Users/hrana/anaconda3/envs/ml_env_fixed/python.exe -c ' *)",
+      "Bash(/c/Users/hrana/anaconda3/envs/ml_env_fixed/python.exe /tmp/cv_mesh_smoketest.py)",
+      "Bash(rm -rf /tmp/cranovision_artifacts/*)",
+      "Read(//d/tmp/cranovision_artifacts/**)",
+      "Bash(/c/Users/hrana/anaconda3/envs/ml_env_fixed/python.exe -m uvicorn main:app --host 0.0.0.0 --port 8000 --app-dir \"D:/2_ML PROJECTS/30. Brainstorm/CranioVision/backend\")",
+      "Bash(tee /tmp/cv_backend.log)",
+      "Bash(curl -s http://localhost:8000/docs)",
+      "Read(//tmp/**)",
+      "Bash(netstat -ano)",
+      "Bash(/c/Users/hrana/anaconda3/envs/ml_env_fixed/python.exe *)",
+      "Bash(npx tsc *)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('backend/services/mesh_extractor.py'\\).read\\(\\)\\); ast.parse\\(open\\('backend/services/job_manager.py'\\).read\\(\\)\\); ast.parse\\(open\\('backend/api/routes.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('backend/services/mesh_extractor.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Read(//c/Users/hrana/miniconda3/**)",
+      "Read(//c/ProgramData/miniconda3/**)",
+      "Read(//c/Users/hrana/anaconda3/envs//**)",
+      "Bash(/c/Users/hrana/miniconda3/envs/ml_env_fixed/python.exe *)",
+      "Bash(where conda *)"
+    ]
+  }
+}

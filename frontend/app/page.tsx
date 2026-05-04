@@ -1,19 +1,27 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import {
   Brain, Upload, Download, FileText, Loader2, CheckCircle2,
-  AlertCircle, Activity,
+  AlertCircle, Activity, Sparkles, Info, X,
 } from 'lucide-react';
 import {
   uploadCase, subscribeToProgress, getJobResult,
   triggerXai, generateReport, getReportDownloadUrl,
+  getHeatmapMeshJsonUrl,
 } from '@/lib/api';
 import type {
   AnalysisResult, JobProgressEvent, ModelName, AtlasResult,
 } from '@/lib/types';
 import { MODEL_DISPLAY_NAMES } from '@/lib/types';
-import { NiivueViewer } from '@/components/NiivueViewer';
+import dynamic from 'next/dynamic';
+
+// Plotly Mesh3d viewer is client-only (uses window + bundles plotly.js-dist-min).
+// Aliased to `Brain3DViewer` so the rest of the page is unchanged.
+const Brain3DViewer = dynamic(
+  () => import('@/components/PlotlyBrainViewer').then((m) => m.PlotlyBrainViewer),
+  { ssr: false },
+);
 
 const DEMO_CASES = [
   'BraTS-GLI-02143-102',
@@ -42,7 +50,9 @@ export default function HomePage() {
   const [segOpacity, setSegOpacity] = useState(0.6);
   const [hmOpacity, setHmOpacity] = useState(0.55);
   const [xaiLoading, setXaiLoading] = useState(false);
-  const [xaiAvailableForModel, setXaiAvailableForModel] = useState<Set<string>>(new Set());
+  // XAI is shared: Attention U-Net is the validated explainer for ALL
+  // predictions (Phase 3 Week 2 — see CLAUDE.md). Single boolean, not per-model.
+  const [xaiReady, setXaiReady] = useState(false);
   const [reportUrl, setReportUrl] = useState<string | null>(null);
   const [reportLoading, setReportLoading] = useState(false);
 
@@ -54,7 +64,7 @@ export default function HomePage() {
     setProgress(null);
     setReportUrl(null);
     setShowHeatmap(false);
-    setXaiAvailableForModel(new Set());
+    setXaiReady(false);
 
     try {
       const created = await uploadCase(files);
@@ -119,6 +129,10 @@ export default function HomePage() {
     [],
   );
 
+  // XAI is shared across models — no per-model gating needed. The heatmap
+  // mesh is built once for the ensemble prediction and rendered on top of
+  // whichever model the user is viewing.
+
   // -------------------- progress subscription ---------------------------
 
   useEffect(() => {
@@ -138,20 +152,87 @@ export default function HomePage() {
   }, [jobId]);
 
   // -------------------- XAI handler -------------------------------------
+  // Generates Grad-CAM ONCE for the ensemble prediction. The explainer is
+  // always Attention U-Net regardless of the prediction being viewed
+  // (validated in Phase 3 Week 2 — see CLAUDE.md). The resulting heatmap
+  // applies to whichever model the user clicks on.
+
+  // Refs cancel any in-flight tween if the user toggles modes mid-fade.
+  const tweenIdsRef = useRef<{ seg: number | null; hm: number | null }>({
+    seg: null, hm: null,
+  });
+
+  const tween = useCallback((
+    setter: (v: number) => void,
+    from: number,
+    to: number,
+    durationMs: number,
+    slot: 'seg' | 'hm',
+  ) => {
+    if (tweenIdsRef.current[slot] !== null) {
+      cancelAnimationFrame(tweenIdsRef.current[slot]!);
+    }
+    const start = performance.now();
+    const step = (now: number) => {
+      const t = Math.min(1, (now - start) / durationMs);
+      const eased = 1 - Math.pow(1 - t, 3); // ease-out cubic
+      setter(from + (to - from) * eased);
+      if (t < 1) {
+        tweenIdsRef.current[slot] = requestAnimationFrame(step);
+      } else {
+        tweenIdsRef.current[slot] = null;
+      }
+    };
+    tweenIdsRef.current[slot] = requestAnimationFrame(step);
+  }, []);
 
   const handleGenerateXai = useCallback(async () => {
-    if (!jobId || !selectedModel) return;
+    if (!jobId) return;
     setXaiLoading(true);
+    setError(null);
+
+    let triggerErr: Error | null = null;
     try {
-      await triggerXai(jobId, selectedModel);
-      setXaiAvailableForModel((prev) => new Set([...prev, selectedModel]));
-      setShowHeatmap(true);
+      await triggerXai(jobId, 'ensemble');
     } catch (e) {
-      setError(`XAI failed: ${(e as Error).message}`);
-    } finally {
-      setXaiLoading(false);
+      triggerErr = e as Error;
     }
-  }, [jobId, selectedModel]);
+
+    // Probe with GET — the backend only registers GET on this route
+    // (FastAPI does not auto-add HEAD). Body is small JSON.
+    let heatmapAvailable = false;
+    try {
+      const probe = await fetch(getHeatmapMeshJsonUrl(jobId, 'ensemble'));
+      heatmapAvailable = probe.ok;
+    } catch {
+      heatmapAvailable = false;
+    }
+
+    if (heatmapAvailable) {
+      // Enter XAI mode: heatmap fades in, segmentation dims to 30% backdrop.
+      setHmOpacity(0);
+      setXaiReady(true);
+      setShowHeatmap(true);
+      // Defer one frame so showHeatmap takes effect before tweening.
+      requestAnimationFrame(() => {
+        tween(setSegOpacity, segOpacity, 0.3, 500, 'seg');
+        tween(setHmOpacity, 0, 0.7, 500, 'hm');
+      });
+    } else if (triggerErr) {
+      setError(`XAI failed: ${triggerErr.message}`);
+    } else {
+      setError('XAI ran but no heatmap mesh was produced.');
+    }
+    setXaiLoading(false);
+  }, [jobId, tween, segOpacity]);
+
+  const handleExitXai = useCallback(() => {
+    // Reverse the entrance: heatmap fades out, segmentation back to 60%.
+    tween(setHmOpacity, hmOpacity, 0, 400, 'hm');
+    tween(setSegOpacity, segOpacity, 0.6, 500, 'seg');
+    // After the fade-out completes, drop the heatmap trace entirely.
+    setTimeout(() => setShowHeatmap(false), 420);
+  }, [tween, hmOpacity, segOpacity]);
 
   // -------------------- Report handler ----------------------------------
 
@@ -159,6 +240,7 @@ export default function HomePage() {
     if (!jobId) return;
     setReportLoading(true);
     setReportUrl(null);
+    setError(null);
     try {
       await generateReport(jobId, selectedModel);
       setReportUrl(getReportDownloadUrl(jobId));
@@ -173,7 +255,7 @@ export default function HomePage() {
 
   const currentMetrics = result?.per_model_metrics?.[selectedModel];
   const atlasForModel: AtlasResult | undefined = result?.atlas?.[selectedModel];
-  const isJobRunning = progress && progress.percent < 100 && progress.stage !== 'error';
+  const isJobRunning = !!progress && progress.percent < 100 && progress.stage !== 'error';
   const isJobDone = result !== null;
 
   // ----------------------------------------------------------------------
@@ -243,9 +325,8 @@ export default function HomePage() {
                   setShowHeatmap={setShowHeatmap}
                   setSegOpacity={setSegOpacity}
                   setHmOpacity={setHmOpacity}
-                  xaiAvailable={xaiAvailableForModel.has(selectedModel)}
-                  xaiLoading={xaiLoading}
-                  onGenerateXai={handleGenerateXai}
+                  xaiReady={xaiReady}
+                  onExitXai={handleExitXai}
                 />
               </div>
               <MetricsPanel metrics={currentMetrics} />
@@ -263,6 +344,9 @@ export default function HomePage() {
               onDownloadReport={handleGenerateReport}
               reportUrl={reportUrl}
               reportLoading={reportLoading}
+              onGenerateXai={handleGenerateXai}
+              xaiReady={xaiReady}
+              xaiLoading={xaiLoading}
             />
           </>
         )}
@@ -461,7 +545,7 @@ function ViewerPanel({
   jobId, modelName, showSegmentation, showHeatmap,
   segOpacity, hmOpacity,
   setShowSegmentation, setShowHeatmap, setSegOpacity, setHmOpacity,
-  xaiAvailable, xaiLoading, onGenerateXai,
+  xaiReady, onExitXai,
 }: {
   jobId: string;
   modelName: ModelName;
@@ -473,27 +557,42 @@ function ViewerPanel({
   setShowHeatmap: (v: boolean) => void;
   setSegOpacity: (v: number) => void;
   setHmOpacity: (v: number) => void;
-  xaiAvailable: boolean;
-  xaiLoading: boolean;
-  onGenerateXai: () => void;
+  xaiReady: boolean;
+  onExitXai: () => void;
 }) {
+  // Mode is derived from state: XAI mode only when XAI is ready AND the
+  // heatmap toggle is on. Switching showHeatmap inside XAI mode flips the
+  // toggle's checkbox but the segmentation/heatmap traces stay independent.
+  const inXaiMode = xaiReady && showHeatmap;
+
   return (
     <div className="bg-white rounded-lg border border-gray-200 p-4">
       <div className="flex items-center justify-between mb-3">
-        <h2 className="text-base font-semibold text-clinical-navy">
-          3D Anatomical Viewer
-        </h2>
-        <div className="flex gap-2 items-center">
+        <div className="flex items-center gap-2">
+          <h2 className="text-base font-semibold text-clinical-navy">
+            3D Anatomical Viewer
+          </h2>
+          {inXaiMode && (
+            <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full">
+              <Sparkles className="w-3 h-3" />
+              XAI Mode
+            </span>
+          )}
+        </div>
+
+        <div className="flex gap-3 items-center">
           <label className="flex items-center gap-1 text-xs">
             <input
               type="checkbox"
               checked={showSegmentation}
               onChange={(e) => setShowSegmentation(e.target.checked)}
             />
-            Segmentation
+            <span className={inXaiMode ? 'text-gray-500' : ''}>
+              Segmentation{inXaiMode ? ' (backdrop)' : ''}
+            </span>
           </label>
 
-          {xaiAvailable ? (
+          {xaiReady ? (
             <label className="flex items-center gap-1 text-xs">
               <input
                 type="checkbox"
@@ -503,54 +602,79 @@ function ViewerPanel({
               Grad-CAM
             </label>
           ) : (
-            <button
-              onClick={onGenerateXai}
-              disabled={xaiLoading}
-              className="text-xs px-3 py-1 rounded bg-clinical-navy text-white hover:bg-clinical-accent disabled:opacity-50"
+            <span
+              className="flex items-center gap-1 text-xs text-gray-400 cursor-not-allowed"
+              title="Click 'Generate XAI Explanation' below to enable"
             >
-              {xaiLoading ? 'Generating…' : '+ Grad-CAM'}
-            </button>
+              <input type="checkbox" disabled />
+              Grad-CAM
+            </span>
           )}
         </div>
       </div>
 
+      {inXaiMode && (
+        <div className="mb-2 text-xs text-purple-700 bg-purple-50 border border-purple-100 rounded px-2.5 py-1.5 flex items-start gap-1.5">
+          <Info className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+          <span>
+            Grad-CAM heatmap (Attention U-Net explainer, applied to all
+            predictions). Switch model tabs to compare each prediction's
+            tumor surface against the same attention map.
+          </span>
+        </div>
+      )}
+
       <div className="h-[500px] mb-3">
-        <NiivueViewer
+        <Brain3DViewer
           jobId={jobId}
           modelName={modelName}
           showSegmentation={showSegmentation}
           showHeatmap={showHeatmap}
           segmentationOpacity={segOpacity}
           heatmapOpacity={hmOpacity}
+          xaiAvailable={xaiReady}
         />
       </div>
 
-      <div className="grid grid-cols-2 gap-3 text-xs text-gray-600">
-        <div>
-          Seg opacity:{' '}
-          <input
-            type="range"
-            min={0}
-            max={1}
-            step={0.05}
-            value={segOpacity}
-            onChange={(e) => setSegOpacity(Number(e.target.value))}
-            className="ml-1 w-32 align-middle"
-          />
+      <div className="flex items-center justify-between gap-3 text-xs text-gray-600">
+        <div className="flex gap-4">
+          <div>
+            Seg opacity:{' '}
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={segOpacity}
+              onChange={(e) => setSegOpacity(Number(e.target.value))}
+              disabled={!showSegmentation}
+              className="ml-1 w-28 align-middle"
+            />
+          </div>
+          <div>
+            Heatmap opacity:{' '}
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={hmOpacity}
+              onChange={(e) => setHmOpacity(Number(e.target.value))}
+              disabled={!inXaiMode}
+              className="ml-1 w-28 align-middle"
+            />
+          </div>
         </div>
-        <div>
-          Heatmap opacity:{' '}
-          <input
-            type="range"
-            min={0}
-            max={1}
-            step={0.05}
-            value={hmOpacity}
-            onChange={(e) => setHmOpacity(Number(e.target.value))}
-            disabled={!showHeatmap}
-            className="ml-1 w-32 align-middle"
-          />
-        </div>
+
+        {inXaiMode && (
+          <button
+            onClick={onExitXai}
+            className="inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded border border-gray-300 text-gray-700 hover:bg-gray-50"
+          >
+            <X className="w-3 h-3" />
+            Exit XAI Mode
+          </button>
+        )}
       </div>
     </div>
   );
@@ -745,11 +869,15 @@ function EloquentCard({ atlas }: { atlas?: AtlasResult }) {
 
 function AgreementBanner({
   agreement, onDownloadReport, reportUrl, reportLoading,
+  onGenerateXai, xaiReady, xaiLoading,
 }: {
   agreement: { unanimous_fraction: number; n_models_compared: number };
   onDownloadReport: () => void;
   reportUrl: string | null;
   reportLoading: boolean;
+  onGenerateXai: () => void;
+  xaiReady: boolean;
+  xaiLoading: boolean;
 }) {
   const pct = (agreement.unanimous_fraction * 100).toFixed(2);
   return (
@@ -760,11 +888,40 @@ function AgreementBanner({
           <div className="text-sm opacity-90 mt-1">Multi-model unanimous</div>
         </div>
         <div className="text-sm opacity-90 col-span-2 md:col-span-1">
-          All {agreement.n_models_compared} architectures agreed on {pct}% of voxels.
-          Disagreement concentrates at tumor boundaries — radiologist review
-          recommended at edge regions.
+          <div>
+            All {agreement.n_models_compared} architectures agreed on {pct}% of voxels.
+            Disagreement concentrates at tumor boundaries — radiologist review
+            recommended at edge regions.
+          </div>
+          <div className="mt-3 flex items-start gap-1.5 text-xs opacity-75">
+            <Info className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+            <span>
+              Grad-CAM uses Attention U-Net as the shared explainer
+              (validated empirically).
+            </span>
+          </div>
         </div>
         <div className="flex flex-col gap-2 md:items-end">
+          {xaiReady ? (
+            <div className="inline-flex items-center gap-2 text-sm opacity-90">
+              <CheckCircle2 className="w-4 h-4 text-green-300" />
+              XAI ready — toggle in viewer
+            </div>
+          ) : (
+            <button
+              onClick={onGenerateXai}
+              disabled={xaiLoading}
+              className="inline-flex items-center gap-2 bg-white/10 border border-white/30 text-white px-4 py-2 rounded font-medium text-sm hover:bg-white/20 disabled:opacity-50"
+            >
+              {xaiLoading ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Sparkles className="w-4 h-4" />
+              )}
+              {xaiLoading ? 'Generating XAI…' : 'Generate XAI Explanation'}
+            </button>
+          )}
+
           {reportUrl ? (
             <a
               href={reportUrl}

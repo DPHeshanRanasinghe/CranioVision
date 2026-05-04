@@ -14,6 +14,13 @@ Viewer artifact endpoints (NEW):
     GET    /jobs/{job_id}/t1c.nii.gz            — base T1c MRI for viewer
     GET    /jobs/{job_id}/predictions/{model}.nii.gz   — prediction mask
     GET    /jobs/{job_id}/xai/{model}/{class}.nii.gz   — Grad-CAM heatmap
+
+3D mesh endpoints:
+    GET    /jobs/{job_id}/meshes/brain.glb              — brain shell mesh (Three.js)
+    GET    /jobs/{job_id}/meshes/brain.json             — brain shell mesh (Plotly)
+    GET    /jobs/{job_id}/meshes/{model}/manifest.json  — which classes exist
+    GET    /jobs/{job_id}/meshes/{model}/{class}.glb    — per-class tumor mesh (Three.js)
+    GET    /jobs/{job_id}/meshes/{model}/{class}.json   — per-class tumor mesh (Plotly)
 """
 from __future__ import annotations
 
@@ -283,11 +290,139 @@ async def download_xai_heatmap(
 
 
 # -----------------------------------------------------------------------------
+# 3D MESH ENDPOINTS — for the three.js viewer
+# -----------------------------------------------------------------------------
+
+VALID_MODEL_NAMES = {"attention_unet", "swin_unetr", "nnunet", "ensemble"}
+VALID_CLASS_NAMES = {"edema", "enhancing", "necrotic"}
+
+
+@router.get("/jobs/{job_id}/meshes/brain.glb")
+async def download_brain_mesh(job_id: str):
+    """Semi-transparent brain shell mesh (shared across models)."""
+    job = get_manager().get(job_id)
+    if job is None:
+        raise HTTPException(404, "Job not found")
+
+    mesh_path = job.artifacts_dir / "meshes" / "brain.glb"
+    if not mesh_path.exists():
+        raise HTTPException(
+            404,
+            f"Brain mesh not yet available. Pipeline state: {job.state}",
+        )
+    return FileResponse(
+        mesh_path,
+        media_type="model/gltf-binary",
+        filename=f"{job.case_id}_brain.glb",
+    )
+
+
+@router.get("/jobs/{job_id}/meshes/brain.json")
+async def download_brain_mesh_json(job_id: str):
+    """Brain shell mesh as Plotly Mesh3d JSON ({x,y,z,i,j,k})."""
+    job = get_manager().get(job_id)
+    if job is None:
+        raise HTTPException(404, "Job not found")
+
+    json_path = job.artifacts_dir / "meshes" / "brain.json"
+    if not json_path.exists():
+        raise HTTPException(
+            404,
+            f"Brain mesh JSON not yet available. Pipeline state: {job.state}",
+        )
+    return FileResponse(json_path, media_type="application/json")
+
+
+@router.get("/jobs/{job_id}/meshes/{model_name}/manifest.json")
+async def mesh_manifest(job_id: str, model_name: str):
+    """
+    Per-model mesh manifest. The frontend reads this to know which class
+    meshes exist before trying to fetch them (a case may have no necrotic
+    core, etc).
+    """
+    job = get_manager().get(job_id)
+    if job is None:
+        raise HTTPException(404, "Job not found")
+    if model_name not in VALID_MODEL_NAMES:
+        raise HTTPException(400, f"Unknown model. Choose from {VALID_MODEL_NAMES}")
+
+    manifest_path = (
+        job.artifacts_dir / "meshes" / model_name / "manifest.json"
+    )
+    if not manifest_path.exists():
+        raise HTTPException(
+            404,
+            f"Mesh manifest not yet available. Pipeline state: {job.state}",
+        )
+    return FileResponse(manifest_path, media_type="application/json")
+
+
+@router.get("/jobs/{job_id}/meshes/{model_name}/{class_name}.glb")
+async def download_class_mesh(
+    job_id: str, model_name: str, class_name: str,
+):
+    """Per-class tumor mesh as a binary glTF."""
+    job = get_manager().get(job_id)
+    if job is None:
+        raise HTTPException(404, "Job not found")
+    if model_name not in VALID_MODEL_NAMES:
+        raise HTTPException(400, f"Unknown model. Choose from {VALID_MODEL_NAMES}")
+    # heatmap.glb is a Task-2 addition; allow it through without joining the
+    # tumor-class set so we don't need a second route.
+    if class_name not in VALID_CLASS_NAMES and class_name != "heatmap":
+        raise HTTPException(400, f"Unknown class. Choose from {VALID_CLASS_NAMES}")
+
+    mesh_path = (
+        job.artifacts_dir / "meshes" / model_name / f"{class_name}.glb"
+    )
+    if not mesh_path.exists():
+        raise HTTPException(
+            404,
+            f"Mesh not available for {model_name}/{class_name}. "
+            f"This class may be empty for this case.",
+        )
+    return FileResponse(
+        mesh_path,
+        media_type="model/gltf-binary",
+        filename=f"{job.case_id}_{model_name}_{class_name}.glb",
+    )
+
+
+@router.get("/jobs/{job_id}/meshes/{model_name}/{class_name}.json")
+async def download_class_mesh_json(
+    job_id: str, model_name: str, class_name: str,
+):
+    """
+    Per-class tumor mesh (or heatmap mesh) as Plotly-Mesh3d JSON.
+    `class_name` ∈ {edema, enhancing, necrotic, heatmap}.
+    """
+    job = get_manager().get(job_id)
+    if job is None:
+        raise HTTPException(404, "Job not found")
+    if model_name not in VALID_MODEL_NAMES:
+        raise HTTPException(400, f"Unknown model. Choose from {VALID_MODEL_NAMES}")
+    if class_name not in VALID_CLASS_NAMES and class_name != "heatmap":
+        raise HTTPException(400, f"Unknown class. Choose from {VALID_CLASS_NAMES}")
+
+    json_path = (
+        job.artifacts_dir / "meshes" / model_name / f"{class_name}.json"
+    )
+    if not json_path.exists():
+        raise HTTPException(
+            404,
+            f"Mesh JSON not available for {model_name}/{class_name}. "
+            f"This class may be empty (or XAI not yet generated for heatmap).",
+        )
+    return FileResponse(json_path, media_type="application/json")
+
+
+# -----------------------------------------------------------------------------
 # XAI
 # -----------------------------------------------------------------------------
 
 @router.post("/jobs/{job_id}/explain")
 async def trigger_xai(job_id: str, body: XaiRequest):
+    import traceback
     mgr = get_manager()
     job = mgr.get(job_id)
     if job is None:
@@ -301,6 +436,16 @@ async def trigger_xai(job_id: str, body: XaiRequest):
         xai = await mgr.run_xai(job_id, body.model_name)
     except RuntimeError as e:
         raise HTTPException(409, str(e))
+    except Exception as e:
+        tb = traceback.format_exc()
+        print(
+            "[xai] /explain failed for job=%s model=%s: %s\n%s"
+            % (job_id, body.model_name, type(e).__name__, tb),
+            flush=True,
+        )
+        raise HTTPException(
+            500, f"XAI failed: {type(e).__name__}: {e}"
+        )
     if xai is None:
         raise HTTPException(500, "XAI failed for unknown reason")
 

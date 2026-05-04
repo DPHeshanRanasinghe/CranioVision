@@ -11,13 +11,20 @@
   },
   "dependencies": {
     "@niivue/niivue": "^0.44.2",
+    "@react-three/drei": "^9.122.0",
+    "@react-three/fiber": "^8.18.0",
+    "@types/react-plotly.js": "^2.6.4",
+    "@types/three": "^0.169.0",
+    "clsx": "^2.1.1",
     "lucide-react": "^0.468.0",
     "next": "^14.2.18",
+    "plotly.js-dist-min": "^3.5.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "react-plotly.js": "^2.6.0",
     "recharts": "^2.13.3",
-    "clsx": "^2.1.1",
-    "tailwind-merge": "^2.5.4"
+    "tailwind-merge": "^2.5.4",
+    "three": "^0.169.0"
   },
   "devDependencies": {
     "@types/node": "^22.9.0",
