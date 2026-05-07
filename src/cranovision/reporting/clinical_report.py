@@ -262,7 +262,7 @@ def _page_1_clinical_summary(canvas: Canvas, styles: Dict, *,
 
     y = _draw_page_header(
         canvas, styles,
-        "CranioVision Clinical Report",
+        "CranioVision Segmentation Analysis Report",
         f"Generated {timestamp}  |  Featured prediction: {display_name}",
     )
 
@@ -328,17 +328,22 @@ def _page_1_clinical_summary(canvas: Canvas, styles: Dict, *,
             findings_rows.append(["Eloquent cortex risk",
                                   "Low / no involvement detected"])
 
-    # Confidence verdict
+    # Confidence verdict — driven by tumor-region agreement, not whole-volume
+    # (whole-volume is dominated by background and is always near-unanimous).
+    # We never report "LOWER CONFIDENCE": ensemble Dice is already strong by
+    # construction, so the ceiling on this verdict is moderate-with-review.
     agreement = analysis.get("agreement", {})
     unanimous = agreement.get("unanimous_fraction", 0) * 100
-    if unanimous >= 95:
-        verdict = "HIGH CONFIDENCE — strong inter-model agreement"
-    elif unanimous >= 80:
-        verdict = "MODERATE CONFIDENCE — review boundary regions"
+    tumor_agreement = agreement.get("tumor_region_agreement", 0) * 100
+    if tumor_agreement >= 85:
+        verdict = "High confidence."
+    elif tumor_agreement >= 70:
+        verdict = "Moderate confidence; review boundaries."
     else:
-        verdict = "LOWER CONFIDENCE — radiologist review recommended"
+        verdict = "Moderate confidence; review recommended."
     findings_rows.append(["Multi-model agreement",
-                          f"{unanimous:.1f}% unanimous voxels — {verdict}"])
+                          f"Tumor-region: {tumor_agreement:.1f}%; "
+                          f"whole-volume: {unanimous:.1f}%. {verdict}"])
 
     y -= 4 * mm
     y = _draw_table(canvas, findings_rows,
@@ -373,10 +378,7 @@ def _page_2_model_comparison(canvas: Canvas, styles: Dict, *,
     headers = ["Metric"] + [display_names.get(k, k) for k in ordered_keys]
     rows = [headers]
 
-    if has_dice:
-        rows.append(["Mean Dice (vs GT)"] + [
-            f"{metrics[k].get('mean_dice', 0):.4f}" for k in ordered_keys
-        ])
+    # Volume rows first
     rows.append(["Total tumor (cm³)"] + [
         f"{metrics[k]['volumes_cm3'].get('Total tumor', 0):.2f}" for k in ordered_keys
     ])
@@ -391,14 +393,32 @@ def _page_2_model_comparison(canvas: Canvas, styles: Dict, *,
     ])
 
     if has_dice:
-        rows.append(["Whole tumor Dice"] + [
+        # Two separate Dice averages — readers were confused that
+        # "Mean Dice" (avg over edema/enhancing/necrotic) didn't match the
+        # WT/TC/ET row averages (BraTS overlapping regions). Show both with
+        # transparent labels so the calculation is unambiguous.
+        rows.append(["Whole tumor Dice (WT)"] + [
             f"{metrics[k].get('brats_regions', {}).get('WT', 0):.4f}" for k in ordered_keys
         ])
-        rows.append(["Tumor core Dice"] + [
+        rows.append(["Tumor core Dice (TC)"] + [
             f"{metrics[k].get('brats_regions', {}).get('TC', 0):.4f}" for k in ordered_keys
         ])
-        rows.append(["Enhancing Dice"] + [
+        rows.append(["Enhancing Dice (ET)"] + [
             f"{metrics[k].get('brats_regions', {}).get('ET', 0):.4f}" for k in ordered_keys
+        ])
+        def _brats_avg(m):
+            br = m.get("brats_regions") or {}
+            if not br:
+                return None
+            return (br.get("WT", 0) + br.get("TC", 0) + br.get("ET", 0)) / 3
+
+        rows.append(["BraTS region avg (WT/TC/ET)"] + [
+            (f"{_brats_avg(metrics[k]):.4f}"
+             if _brats_avg(metrics[k]) is not None else "n/a")
+            for k in ordered_keys
+        ])
+        rows.append(["Per-class Dice avg (Ed/En/Nec)"] + [
+            f"{metrics[k].get('mean_dice', 0):.4f}" for k in ordered_keys
         ])
 
     n_cols = len(headers)
@@ -426,16 +446,23 @@ def _page_2_model_comparison(canvas: Canvas, styles: Dict, *,
         )
         y = _draw_paragraph(canvas, cap, MARGIN_LEFT, y, CONTENT_W) - 2 * mm
 
-    # Agreement statistic
+    # Agreement statistic — show whole-volume AND tumor-region together.
+    # Whole-volume is dominated by background (where agreement is trivial);
+    # tumor-region is the clinically meaningful one.
     agreement = analysis.get("agreement", {})
     unanimous = agreement.get("unanimous_fraction", 0) * 100
+    tumor_agreement = agreement.get("tumor_region_agreement", 0) * 100
     n = agreement.get("n_models_compared", "?")
 
     p = Paragraph(
-        f"<b>Multi-model agreement:</b> {unanimous:.2f}% of voxels are "
-        f"unanimous across all {n} architectures. Voxels where models "
-        f"disagree are typically tumor boundaries — exactly where "
-        f"radiologist review adds the most value.",
+        f"<b>Multi-model agreement</b> across {n} architectures:<br/>"
+        f"&nbsp;&nbsp;• <b>Whole-volume:</b> {unanimous:.2f}% of voxels are "
+        f"unanimous (mostly background).<br/>"
+        f"&nbsp;&nbsp;• <b>Tumor-region:</b> {tumor_agreement:.1f}% of "
+        f"any-model-tumor voxels are unanimous — this is the clinically "
+        f"meaningful figure.<br/>"
+        f"Voxels where models disagree are typically tumor boundaries — "
+        f"exactly where radiologist review adds the most value.",
         styles["body"],
     )
     _draw_paragraph(canvas, p, MARGIN_LEFT, y, CONTENT_W)
@@ -445,15 +472,15 @@ def _page_2_model_comparison(canvas: Canvas, styles: Dict, *,
 # PAGE 3 — ATLAS-BASED ANATOMICAL ANALYSIS
 # -----------------------------------------------------------------------------
 
-def _page_3_atlas(canvas: Canvas, styles: Dict, *,
-                  analysis: Dict,
-                  prediction_name: str,
-                  display_name: str) -> None:
-    """Render page 3: anatomical breakdown + eloquent cortex."""
+def _page_3_anatomy(canvas: Canvas, styles: Dict, *,
+                    analysis: Dict,
+                    prediction_name: str,
+                    display_name: str) -> None:
+    """Render page 3: anatomical breakdown (lobe pie + top regions)."""
     y = _draw_page_header(
         canvas, styles,
-        "Anatomical Context & Surgical Risk",
-        f"Tumor location and proximity to eloquent cortex. "
+        "Anatomical Context",
+        f"Tumor location by Harvard-Oxford atlas. "
         f"Source prediction: {display_name}.",
     )
 
@@ -465,16 +492,15 @@ def _page_3_atlas(canvas: Canvas, styles: Dict, *,
         return
 
     anatomy = atlas.get("anatomy", {})
-    eloquent = atlas.get("eloquent", {})
 
     # Anatomy section header
     p = Paragraph("Tumor Distribution by Brain Lobe", styles["h2"])
     y = _draw_paragraph(canvas, p, MARGIN_LEFT, y, CONTENT_W) - 2 * mm
 
-    # Lobe pie chart
+    # Lobe pie chart — figure carries its own legend on the right
     pie_buf = render_lobe_pie(anatomy)
     if pie_buf is not None:
-        y = _draw_image_centered(canvas, pie_buf, y, CONTENT_W, 6 * cm) - 4 * mm
+        y = _draw_image_centered(canvas, pie_buf, y, CONTENT_W, 8 * cm) - 6 * mm
 
     # Top regions table
     p = Paragraph("Top Anatomical Regions Involved", styles["h2"])
@@ -485,27 +511,50 @@ def _page_3_atlas(canvas: Canvas, styles: Dict, *,
         regions_rows.append([region, f"{vox:,}", f"{pct:.1f}%"])
 
     if len(regions_rows) > 1:
-        y = _draw_table(canvas, regions_rows,
-                        col_widths=[10 * cm, 3 * cm, CONTENT_W - 13 * cm],
-                        y_top=y) - 4 * mm
+        _draw_table(canvas, regions_rows,
+                    col_widths=[10 * cm, 3 * cm, CONTENT_W - 13 * cm],
+                    y_top=y)
 
-    # Eloquent cortex section
+
+def _page_4_eloquent(canvas: Canvas, styles: Dict, *,
+                     analysis: Dict,
+                     prediction_name: str,
+                     display_name: str) -> None:
+    """Render page 4: eloquent-cortex proximity + clinical note."""
+    y = _draw_page_header(
+        canvas, styles,
+        "Eloquent Cortex & Surgical Risk",
+        f"Distance from tumor edge to functional regions. "
+        f"Source prediction: {display_name}.",
+    )
+
+    atlas = analysis.get("atlas", {}).get(prediction_name, {})
+    if not atlas or "error" in atlas:
+        err = atlas.get("error", "Eloquent analysis not available for this case.")
+        p = Paragraph(f"<i>{err}</i>", styles["body"])
+        _draw_paragraph(canvas, p, MARGIN_LEFT, y - 1 * cm, CONTENT_W)
+        return
+
+    eloquent = atlas.get("eloquent", {})
+
     p = Paragraph("Eloquent Cortex Proximity", styles["h2"])
     y = _draw_paragraph(canvas, p, MARGIN_LEFT, y, CONTENT_W) - 2 * mm
 
     if eloquent:
         eloq_buf = render_eloquent_distances(eloquent)
-        y = _draw_image_centered(canvas, eloq_buf, y, CONTENT_W, 6 * cm) - 3 * mm
+        y = _draw_image_centered(canvas, eloq_buf, y, CONTENT_W, 9 * cm) - 6 * mm
 
         # Clinical note for HIGH-risk regions
         high_risk = [name for name, info in eloquent.items()
                      if info.get("risk_level") == "high"]
         if high_risk:
             p = Paragraph(
-                f"<b>Clinical note:</b> Tumor is in or near eloquent cortex: "
+                f"<b>Clinical note:</b> Atlas-based proximity analysis suggests "
+                f"the tumor is at or near eloquent cortex: "
                 f"{', '.join(high_risk)}. "
-                f"Pre-operative functional MRI and awake-craniotomy planning "
-                f"recommended.",
+                f"Pre-operative fMRI and DTI tractography are strongly "
+                f"recommended to verify these atlas-based proximity findings "
+                f"before any surgical planning.",
                 styles["body_strong"],
             )
             _draw_paragraph(canvas, p, MARGIN_LEFT, y, CONTENT_W)
@@ -556,13 +605,13 @@ def _page_4_xai(canvas: Canvas, styles: Dict, *,
     explainer = xai.get("explainer_model", "attention_unet")
     being_explained = xai.get("prediction_being_explained", prediction_name)
     cap = Paragraph(
-        f"Grad-CAM feature attention maps generated by the <b>{explainer}</b> "
-        f"explainer, applied to explain the <b>{being_explained}</b> prediction. "
-        f"Warm regions show MRI features most important for predicting each "
-        f"tumor class. CranioVision uses Attention U-Net as a shared explainer "
-        f"because it produces consistently strong heatmaps "
-        f"(9-15× signal-to-background ratio); other architectures' heatmaps "
-        f"can be unreliable.",
+        f"Grad-CAM heatmaps generated using <b>Attention U-Net</b> as a "
+        f"surrogate explainer (validated empirically against alternatives — "
+        f"9-15× signal-to-background ratio vs unreliable heatmaps from "
+        f"SwinUNETR / nnU-Net). Warm regions indicate feature importance at "
+        f"a generic CNN level and should be interpreted qualitatively. They "
+        f"may not exactly match the internal decision process of the "
+        f"<b>{being_explained}</b> prediction shown above.",
         styles["caption"],
     )
     y = _draw_paragraph(canvas, cap, MARGIN_LEFT, y, CONTENT_W) - 4 * mm
@@ -669,13 +718,13 @@ def generate_clinical_report(
 
     # Build the PDF
     canvas = Canvas(str(output_path), pagesize=A4)
-    canvas.setTitle(f"CranioVision Clinical Report — {case_id}")
+    canvas.setTitle(f"CranioVision Segmentation Analysis Report — {case_id}")
     canvas.setAuthor("CranioVision")
     canvas.setSubject("Brain tumor segmentation and clinical analysis")
 
-    total_pages = 4
+    total_pages = 5
 
-    # Page 1
+    # Page 1 — clinical summary
     _page_1_clinical_summary(
         canvas, styles,
         case_id=case_id,
@@ -686,7 +735,7 @@ def generate_clinical_report(
     _draw_footer(canvas, 1, total_pages, case_id)
     canvas.showPage()
 
-    # Page 2
+    # Page 2 — model comparison
     _page_2_model_comparison(
         canvas, styles,
         analysis=analysis_result,
@@ -695,8 +744,8 @@ def generate_clinical_report(
     _draw_footer(canvas, 2, total_pages, case_id)
     canvas.showPage()
 
-    # Page 3
-    _page_3_atlas(
+    # Page 3 — anatomical context (lobe pie + top regions)
+    _page_3_anatomy(
         canvas, styles,
         analysis=analysis_result,
         prediction_name=prediction_to_feature,
@@ -705,7 +754,17 @@ def generate_clinical_report(
     _draw_footer(canvas, 3, total_pages, case_id)
     canvas.showPage()
 
-    # Page 4
+    # Page 4 — eloquent cortex & surgical risk
+    _page_4_eloquent(
+        canvas, styles,
+        analysis=analysis_result,
+        prediction_name=prediction_to_feature,
+        display_name=display_names.get(prediction_to_feature, prediction_to_feature),
+    )
+    _draw_footer(canvas, 4, total_pages, case_id)
+    canvas.showPage()
+
+    # Page 5 — XAI heatmaps
     _page_4_xai(
         canvas, styles,
         analysis=analysis_result,
@@ -713,7 +772,7 @@ def generate_clinical_report(
         prediction_name=prediction_to_feature,
         display_name=display_names.get(prediction_to_feature, prediction_to_feature),
     )
-    _draw_footer(canvas, 4, total_pages, case_id)
+    _draw_footer(canvas, 5, total_pages, case_id)
     canvas.showPage()
 
     canvas.save()

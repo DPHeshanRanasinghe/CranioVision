@@ -61,16 +61,27 @@ SUBCORTICAL_OFFSET = 100
 
 def _classify_hemisphere(coords_mm: np.ndarray) -> Tuple[float, float]:
     """
-    Classify each voxel as left or right hemisphere based on MNI x-coordinate.
+    Classify each voxel as left or right hemisphere based on its mm
+    x-coordinate.
 
-    In MNI152 space the origin is at the AC (anterior commissure), and:
-        x < 0  --> left hemisphere
-        x > 0  --> right hemisphere
-        x = 0  --> midline (treated as right by convention)
+    Coordinates here come from `_voxels_to_mni_mm`, which derives them from
+    the ANTs image affine. ANTs stores all images in **LPS+** convention
+    regardless of the source file orientation, meaning:
+
+        +x --> Left   (patient anatomical left)
+        -x --> Right  (patient anatomical right)
+
+    This is the OPPOSITE of the RAS convention used by some other tools
+    (NiBabel default, FSL native, etc.). Getting this wrong produces a
+    silent L/R flip in the report — verified empirically on BraTS-GLI-02143-102
+    where the atlas labelled the dominant region "Right Cerebral White Matter"
+    while a RAS-style classifier was reporting "Left 97%".
+
+    x = 0 voxels (midline) are counted as right by convention.
 
     Parameters
     ----------
-    coords_mm : (N, 3) array of voxel coordinates in MNI mm space
+    coords_mm : (N, 3) array of voxel coordinates in LPS mm space
 
     Returns
     -------
@@ -78,8 +89,8 @@ def _classify_hemisphere(coords_mm: np.ndarray) -> Tuple[float, float]:
     """
     if len(coords_mm) == 0:
         return 0.0, 0.0
-    n_left = int(np.sum(coords_mm[:, 0] < 0))
-    n_right = int(np.sum(coords_mm[:, 0] >= 0))
+    n_left = int(np.sum(coords_mm[:, 0] > 0))
+    n_right = int(np.sum(coords_mm[:, 0] <= 0))
     total = n_left + n_right
     return 100.0 * n_left / total, 100.0 * n_right / total
 

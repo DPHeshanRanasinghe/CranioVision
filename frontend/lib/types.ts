@@ -80,6 +80,7 @@ export interface AtlasResult {
 
 export interface AgreementInfo {
   unanimous_fraction: number;
+  tumor_region_agreement: number;
   n_models_compared: number;
 }
 

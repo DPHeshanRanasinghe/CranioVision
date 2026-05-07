@@ -110,6 +110,7 @@ class AtlasResult(BaseModel):
 
 class AgreementInfo(BaseModel):
     unanimous_fraction: float
+    tumor_region_agreement: float
     n_models_compared: int
 
 

@@ -56,6 +56,48 @@ export async function uploadCase(files: File[]): Promise<CreateJobResponse> {
   return jsonOrThrow<CreateJobResponse>(res);
 }
 
+/**
+ * Same as `uploadCase` but reports byte-level progress via `onProgress`.
+ * Implemented with XHR because `fetch()` does not expose upload progress.
+ * Bytes are the network upload bytes, not server-side parsing — but the
+ * server-side parse is fast compared to the multi-hundred-MB POST.
+ */
+export function uploadCaseWithProgress(
+  files: File[],
+  onProgress?: (loaded: number, total: number) => void,
+): Promise<CreateJobResponse> {
+  return new Promise((resolve, reject) => {
+    const fd = new FormData();
+    for (const f of files) fd.append('files', f);
+    const xhr = new XMLHttpRequest();
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) onProgress(e.loaded, e.total);
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          resolve(JSON.parse(xhr.responseText) as CreateJobResponse);
+        } catch {
+          reject(new Error('Failed to parse upload response'));
+        }
+      } else {
+        let detail = `HTTP ${xhr.status}`;
+        try {
+          const body = JSON.parse(xhr.responseText);
+          detail = body.detail || JSON.stringify(body);
+        } catch {
+          if (xhr.responseText) detail = `${detail}: ${xhr.responseText}`;
+        }
+        reject(new Error(detail));
+      }
+    };
+    xhr.onerror = () => reject(new Error('Network error during upload'));
+    xhr.onabort = () => reject(new Error('Upload aborted'));
+    xhr.open('POST', `${API_BASE}/upload`);
+    xhr.send(fd);
+  });
+}
+
 // -----------------------------------------------------------------------------
 // JOB STATUS / PROGRESS / RESULT
 // -----------------------------------------------------------------------------
@@ -82,7 +124,10 @@ export async function getJobResult(jobId: string): Promise<AnalysisResult> {
 export function subscribeToProgress(
   jobId: string,
   onEvent: (event: JobProgressEvent) => void,
-  onError?: (err: Event) => void,
+  // onError fires for either transport problems (Event) or pipeline failure
+  // (string). Pipeline failures must NOT route through onDone, otherwise the
+  // result fetch returns 409 and masks the real backend error.
+  onError?: (err: Event | string) => void,
   onDone?: () => void,
 ): () => void {
   // SSE bypass: connect directly to backend, NOT through Next.js proxy.
@@ -95,11 +140,13 @@ export function subscribeToProgress(
   // Fallback: if SSE produces no events for 8 seconds, fall back to polling.
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let receivedAnyEvent = false;
+  let terminated = false; // guard against double-firing onDone/onError
   const pollFallbackTimeout = setTimeout(() => {
     if (!receivedAnyEvent) {
       console.warn('[progress] SSE silent — falling back to status polling');
       source.close();
       pollTimer = setInterval(async () => {
+        if (terminated) return;
         try {
           const res = await fetch(`/api/jobs/${jobId}/status`);
           if (!res.ok) return;
@@ -107,7 +154,14 @@ export function subscribeToProgress(
           if (status.latest_progress) {
             onEvent(status.latest_progress);
           }
-          if (status.state === 'done' || status.state === 'failed') {
+          if (status.state === 'failed') {
+            terminated = true;
+            if (pollTimer) clearInterval(pollTimer);
+            if (onError) onError(status.error || 'Pipeline failed');
+            return;
+          }
+          if (status.state === 'done') {
+            terminated = true;
             if (pollTimer) clearInterval(pollTimer);
             if (onDone) onDone();
           }
@@ -119,12 +173,20 @@ export function subscribeToProgress(
   }, 8000);
 
   source.onmessage = (msg) => {
+    if (terminated) return;
     receivedAnyEvent = true;
     clearTimeout(pollFallbackTimeout);
     try {
       const event = JSON.parse(msg.data) as JobProgressEvent;
       onEvent(event);
-      if (event.percent >= 100 || event.stage === 'done' || event.stage === 'error') {
+      if (event.stage === 'error') {
+        terminated = true;
+        source.close();
+        if (onError) onError(event.message || 'Pipeline failed');
+        return;
+      }
+      if (event.percent >= 100 || event.stage === 'done') {
+        terminated = true;
         source.close();
         if (onDone) onDone();
       }
@@ -138,11 +200,13 @@ export function subscribeToProgress(
       // SSE failed before any events — let the poll fallback handle it
       return;
     }
+    if (terminated) return;
     if (onError) onError(err);
     source.close();
   };
 
   return () => {
+    terminated = true;
     clearTimeout(pollFallbackTimeout);
     if (pollTimer) clearInterval(pollTimer);
     source.close();
@@ -181,7 +245,13 @@ export async function generateReport(
   jobId: string,
   predictionToFeature: ModelName,
 ): Promise<ReportInfo> {
-  const res = await fetch(`${API_BASE}/jobs/${jobId}/report`, {
+  // Same Next.js dev-proxy timeout problem as /explain — PDF generation
+  // (4 pages, several rendered figures) takes long enough to trip the
+  // rewrite proxy and produce ECONNRESET in the browser even when the
+  // backend completes the work. Bypass the proxy by hitting the backend
+  // directly. CORS already allows localhost:3000.
+  const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+  const res = await fetch(`${backendUrl}/jobs/${jobId}/report`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ prediction_to_feature: predictionToFeature }),
@@ -190,7 +260,13 @@ export async function generateReport(
 }
 
 export function getReportDownloadUrl(jobId: string): string {
-  return `${API_BASE}/jobs/${jobId}/report.pdf`;
+  // Direct backend URL so the <a download> link doesn't go through the
+  // dev proxy either (PDFs are large and proxy buffering is unreliable).
+  const backendUrl =
+    typeof window !== 'undefined'
+      ? (process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000')
+      : '';
+  return `${backendUrl}/jobs/${jobId}/report.pdf`;
 }
 
 // -----------------------------------------------------------------------------

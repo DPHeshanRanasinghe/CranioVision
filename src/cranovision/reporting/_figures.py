@@ -246,6 +246,12 @@ def render_lobe_pie(anatomy: Dict) -> Optional[BytesIO]:
     """
     Render a pie chart of tumor distribution across brain lobes.
     Returns None if no anatomical data is available.
+
+    Layout choices that matter:
+    - Legend is anchored to the right of the chart so long lobe names
+      (e.g. "Lateral Occipital Cortex, superior division") never overflow.
+    - Slices smaller than 2% omit the inline percentage label; the legend
+      still identifies them. This stops tiny wedges from stacking.
     """
     lobes = anatomy.get("lobes", {})
     if not lobes:
@@ -259,11 +265,23 @@ def render_lobe_pie(anatomy: Dict) -> Optional[BytesIO]:
                "#8C564B", "#E377C2", "#7F7F7F"]
     colors = palette[:len(labels)]
 
-    fig, ax = plt.subplots(figsize=(5.5, 4.5))
+    fig, ax = plt.subplots(figsize=(8, 5))
     fig.patch.set_facecolor("white")
 
+    # matplotlib's default `autopct` renormalizes wedge values to sum to 100%,
+    # which drifts away from the source `pct_of_tumor` numbers we show
+    # elsewhere in the report. Use an iterator-closure so each wedge displays
+    # the exact source percentage — and skip slices <2% to avoid label stacking.
+    sizes_iter = iter(sizes)
+
+    def _autopct(_pct: float) -> str:
+        v = next(sizes_iter)
+        return f"{v:.1f}%" if v > 2.0 else ""
+
     wedges, texts, autotexts = ax.pie(
-        sizes, labels=labels, autopct="%1.1f%%",
+        sizes,
+        labels=None,  # legend handles labels — keeps slices clean
+        autopct=_autopct,
         colors=colors, startangle=90,
         textprops={"color": "black", "fontsize": 9},
         wedgeprops={"edgecolor": "white", "linewidth": 1.5},
@@ -272,6 +290,19 @@ def render_lobe_pie(anatomy: Dict) -> Optional[BytesIO]:
         at.set_color("white")
         at.set_fontweight("bold")
         at.set_fontsize(9)
+
+    # Truncate long region names so the legend column stays narrow
+    legend_labels = [
+        (name[:27] + "...") if len(name) > 30 else name
+        for name in labels
+    ]
+    ax.legend(
+        wedges, legend_labels,
+        loc="center left",
+        bbox_to_anchor=(1.05, 0.5),
+        fontsize=8,
+        frameon=False,
+    )
 
     ax.set_title("Tumor distribution by brain lobe",
                   color="black", fontsize=11, pad=10)
@@ -324,7 +355,7 @@ def render_eloquent_distances(eloquent: Dict) -> BytesIO:
     for i, (bar_d, info_name) in enumerate(zip(distances, names)):
         info = eloquent[info_name]
         if info.get("involved"):
-            label_text = "INVOLVED"
+            label_text = "Edge in/at region"
         elif info.get("distance_mm") is None or info.get("distance_mm") == float("inf"):
             label_text = "n/a"
         else:

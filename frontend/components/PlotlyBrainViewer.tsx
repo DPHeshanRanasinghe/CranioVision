@@ -47,7 +47,17 @@ interface ViewerProps {
   // XAI is shared (Attention U-Net explains all predictions), so this is a
   // single boolean rather than a per-model flag.
   xaiAvailable?: boolean;
+  // 'radiological' (default) shows patient's R on viewer's L (clinical
+  // convention). 'anatomical' mirrors x so patient's R appears on viewer's R
+  // (intuitive for non-clinical users). Implemented as a Plotly axis reverse
+  // — purely a camera/rendering flip, no data transformation.
+  viewMode?: 'radiological' | 'anatomical';
 }
+
+// Color tokens for L / R labels — match Tailwind red-500 / blue-500 used in
+// the dashboard so the orientation cue reads as a deliberate UI element.
+const LABEL_COLOR_R = '#EF4444';
+const LABEL_COLOR_L = '#3B82F6';
 
 // Class colours match the Three.js viewer + the legend in the dashboard.
 const CLASS_COLORS: Record<string, string> = {
@@ -64,6 +74,11 @@ interface MeshManifest {
   model: string;
   available_classes: string[];
   brain_bounds: number[][] | null;
+  // 'L' or 'R' label for each end of the +x axis. Backend derives this from
+  // the MNI atlas affine so the displayed labels are correct regardless of
+  // file orientation.
+  axis_labels?: { x_pos: 'L' | 'R'; x_neg: 'L' | 'R' };
+  source?: string;
 }
 
 interface MeshJson {
@@ -112,6 +127,7 @@ export function PlotlyBrainViewer({
   segmentationOpacity,
   heatmapOpacity,
   xaiAvailable = false,
+  viewMode = 'radiological',
 }: ViewerProps) {
   const [manifest, setManifest] = useState<MeshManifest | null>(null);
   const [brainMesh, setBrainMesh] = useState<MeshJson | null>(null);
@@ -270,11 +286,54 @@ export function PlotlyBrainViewer({
   // onto a centred orbit instead of a default Plotly view.
   const layout = useMemo(() => {
     const bounds = manifest?.brain_bounds;
-    let centre: [number, number, number] = [0, 0, 0];
+
+    // Anatomical L/R annotations — anchored in DATA coordinates so they
+    // rotate with the brain. Backend tells us which end of +x is patient L
+    // vs R (axis_labels), so we don't have to guess based on file orientation.
+    // Labels are deliberately large (~24px text + padding) and color-coded
+    // (R red, L blue) to prevent users from misreading hemisphere.
+    const sceneAnnotations: any[] = [];
     if (bounds && bounds.length === 2) {
       const [mn, mx] = bounds;
-      centre = [(mn[0] + mx[0]) / 2, (mn[1] + mx[1]) / 2, (mn[2] + mx[2]) / 2];
+      const cy = (mn[1] + mx[1]) / 2;
+      const cz = (mn[2] + mx[2]) / 2;
+      const pad = 12;
+      const labels = manifest?.axis_labels ?? { x_pos: 'L', x_neg: 'R' };
+      const colorFor = (side: 'L' | 'R') =>
+        side === 'R' ? LABEL_COLOR_R : LABEL_COLOR_L;
+      sceneAnnotations.push(
+        {
+          x: mx[0] + pad, y: cy, z: cz,
+          text: `<b>${labels.x_pos}</b>`,
+          showarrow: false,
+          font: { color: colorFor(labels.x_pos), size: 22, family: 'Inter, system-ui, sans-serif' },
+          bgcolor: 'rgba(15,23,42,0.92)',
+          bordercolor: colorFor(labels.x_pos),
+          borderwidth: 2,
+          borderpad: 6,
+        },
+        {
+          x: mn[0] - pad, y: cy, z: cz,
+          text: `<b>${labels.x_neg}</b>`,
+          showarrow: false,
+          font: { color: colorFor(labels.x_neg), size: 22, family: 'Inter, system-ui, sans-serif' },
+          bgcolor: 'rgba(15,23,42,0.92)',
+          bordercolor: colorFor(labels.x_neg),
+          borderwidth: 2,
+          borderpad: 6,
+        },
+      );
     }
+
+    // Anatomical view = mirror the x axis. Reversing autorange flips
+    // rendering along x, so the same camera now shows patient R on the
+    // viewer's R. Data-anchored L/R annotations follow the flip.
+    const xaxis: any = {
+      visible: false,
+      showbackground: false,
+      autorange: viewMode === 'anatomical' ? 'reversed' : true,
+    };
+
     return {
       autosize: true,
       paper_bgcolor: SCENE_BG,
@@ -284,7 +343,7 @@ export function PlotlyBrainViewer({
       scene: {
         bgcolor: SCENE_BG,
         aspectmode: 'data',
-        xaxis: { visible: false, showbackground: false },
+        xaxis,
         yaxis: { visible: false, showbackground: false },
         zaxis: { visible: false, showbackground: false },
         camera: {
@@ -292,12 +351,13 @@ export function PlotlyBrainViewer({
           center: { x: 0, y: 0, z: 0 },
           up: { x: 0, y: 0, z: 1 },
         },
+        annotations: sceneAnnotations,
         // No native "look at point" — we centre the data via aspectmode='data'
         // and rely on the bounds-derived centre via annotations only when
         // useful. The eye vector above gives a clean 3/4 orbit.
       },
     };
-  }, [manifest]);
+  }, [manifest, viewMode]);
 
   const config = useMemo(
     () => ({

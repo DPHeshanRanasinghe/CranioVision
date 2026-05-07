@@ -64,6 +64,11 @@ MIN_CLASS_VOXELS = 50
 # every job, so we only ever extract the surface once per backend process.
 _MNI_SHELL_MESH = None
 _MNI_SHELL_BOUNDS: Optional[List[List[float]]] = None
+# x-axis label direction in the MNI atlas storage order, derived once when
+# the shell is extracted. Tuple of ('positive_x_label', 'negative_x_label')
+# where each is 'L' or 'R' depending on the file's orientation. Used by the
+# frontend to place anatomical L/R annotations correctly.
+_MNI_X_AXIS_LABELS: Optional[Tuple[str, str]] = None
 
 
 def _decimate(mesh, target_faces: int):
@@ -180,6 +185,32 @@ def _largest_mesh_component(mesh):
     return max(parts, key=_score)
 
 
+def _x_axis_anatomical_labels(affine: np.ndarray) -> Tuple[str, str]:
+    """
+    Determine which end of the volume's first axis is patient Left vs Right.
+
+    Returns (positive_x_label, negative_x_label) where each is 'L' or 'R'.
+    nibabel uses RAS-world conventions, so axcodes[0] tells us whether
+    increasing the first voxel index moves the world point toward Right
+    ('R') or Left ('L'). Marching cubes operates in voxel-index space with
+    an identity affine, so this mapping carries straight through to the
+    mesh's +x direction.
+    """
+    import nibabel as nib
+
+    try:
+        axcodes = nib.aff2axcodes(affine)
+    except Exception:
+        return ("L", "R")  # safe default for ANTs / LPS pipelines
+
+    first = axcodes[0]
+    if first == "L":
+        return ("L", "R")
+    if first == "R":
+        return ("R", "L")
+    return ("L", "R")
+
+
 def extract_brain_shell_mesh(*_args, **_kwargs):
     """
     Brain shell from the MNI152 1mm atlas template. Cached process-wide
@@ -188,7 +219,7 @@ def extract_brain_shell_mesh(*_args, **_kwargs):
     Args/kwargs are accepted but ignored — the old signature took
     `(t1n_array, affine)`; some callers still pass them.
     """
-    global _MNI_SHELL_MESH, _MNI_SHELL_BOUNDS
+    global _MNI_SHELL_MESH, _MNI_SHELL_BOUNDS, _MNI_X_AXIS_LABELS
 
     if _MNI_SHELL_MESH is not None:
         return _MNI_SHELL_MESH
@@ -199,6 +230,7 @@ def extract_brain_shell_mesh(*_args, **_kwargs):
         return None
 
     img = nib.load(str(MNI_BRAIN_PATH))
+    _MNI_X_AXIS_LABELS = _x_axis_anatomical_labels(img.affine)
     vol = np.asarray(img.dataobj).astype(np.float32)
 
     # MNI brain template is already skull-stripped — anything > 0 is brain.
@@ -228,6 +260,11 @@ def extract_brain_shell_mesh(*_args, **_kwargs):
 def get_mni_brain_bounds() -> Optional[List[List[float]]]:
     """Bounds of the MNI shell mesh (after extraction). None until first call."""
     return _MNI_SHELL_BOUNDS
+
+
+def get_mni_x_axis_labels() -> Optional[Tuple[str, str]]:
+    """(positive_x_label, negative_x_label) for the MNI shell, or None."""
+    return _MNI_X_AXIS_LABELS
 
 
 # ---------------------------------------------------------------------------
@@ -438,19 +475,35 @@ def _load_binary_warped_mask(case_id: str) -> Optional[np.ndarray]:
 # JOB-LEVEL ORCHESTRATION
 # ---------------------------------------------------------------------------
 
+def _load_warped_prediction(path: Path) -> Optional[np.ndarray]:
+    """Load a per-model prediction warped to MNI as int16. None on failure."""
+    import nibabel as nib
+
+    if not path.exists():
+        return None
+    try:
+        return np.asarray(nib.load(str(path)).dataobj).astype(np.int16)
+    except Exception:
+        return None
+
+
 def extract_meshes_for_job(
     artifacts_dir: Path,
     case_id: str,
     model_names: List[str],
     gt_mask_path: Optional[str] = None,
-) -> Dict[str, Dict[str, List[str]]]:
+    predictions_mni_dir: Optional[Path] = None,
+) -> Dict[str, Dict[str, object]]:
     """
-    Build the brain shell (MNI atlas) + per-class tumor meshes (GT warped to
-    MNI) for every model.
+    Build the brain shell (MNI atlas) + per-class tumor meshes for every
+    model.
 
-    All four model tabs share the same warped GT mask — Phase 4 design choice
-    so the visualisation always sits inside the MNI shell. Per-model
-    differences live in the metrics/atlas panels.
+    Source priority for each model's tumor surface:
+      1. `predictions_mni_dir/{model}.nii.gz` — the model's own prediction
+         warped to MNI (shows real per-model differences across tabs).
+      2. GT mask warped to MNI (shared across all models — fallback only).
+      3. Binary `warped_mask.nii.gz` from atlas_cache (single-surface fallback
+         when there's no GT mask at all).
 
     File layout written under `artifacts_dir`:
         meshes/brain.glb + brain.json
@@ -476,8 +529,10 @@ def extract_meshes_for_job(
             export_mesh(shell, brain_path)
         brain_bounds = shell.bounds.tolist()
 
-    # ---- multi-class warped tumor (shared across models) ----
-    # _v2 suffix invalidates any pre-remap caches written by an earlier build.
+    x_labels = get_mni_x_axis_labels() or ("L", "R")
+    axis_labels = {"x_pos": x_labels[0], "x_neg": x_labels[1]}
+
+    # ---- shared fallback: GT warped to MNI ----
     multiclass_cache = ATLAS_CACHE_DIR / case_id / "warped_mask_multiclass_v2.nii.gz"
     warped_multiclass: Optional[np.ndarray] = None
     if gt_mask_path:
@@ -487,58 +542,75 @@ def extract_meshes_for_job(
             cache_path=multiclass_cache,
         )
 
-    # Fallback: binary warped_mask.nii.gz (single class, one colour).
-    binary_fallback = warped_multiclass is None
-    if binary_fallback:
-        binary_mask = _load_binary_warped_mask(case_id)
-    else:
-        binary_mask = None
+    binary_fallback_mask: Optional[np.ndarray] = None
+    if warped_multiclass is None:
+        binary_fallback_mask = _load_binary_warped_mask(case_id)
 
-    # ---- per-model class meshes (same source data, written under each model) ----
-    summary: Dict[str, Dict[str, List[str]]] = {}
+    # ---- per-model class meshes ----
+    summary: Dict[str, Dict[str, object]] = {}
     for model_name in model_names:
         model_dir = meshes_dir / model_name
         model_dir.mkdir(parents=True, exist_ok=True)
 
+        # Prefer per-model warped prediction; this is the path that makes
+        # tabs visibly different.
+        per_model_volume: Optional[np.ndarray] = None
+        if predictions_mni_dir is not None:
+            per_model_volume = _load_warped_prediction(
+                predictions_mni_dir / f"{model_name}.nii.gz"
+            )
+
+        source = "per_model_prediction" if per_model_volume is not None else None
+
+        # Fall back to the shared GT-derived sources.
+        if per_model_volume is None and warped_multiclass is not None:
+            per_model_volume = warped_multiclass
+            source = "shared_gt_multiclass"
+
         available: List[str] = []
 
-        if warped_multiclass is not None:
+        if per_model_volume is not None:
             for class_value, (class_name, _rgba) in TUMOR_CLASSES.items():
                 out_path = model_dir / f"{class_name}.glb"
                 json_path = out_path.with_suffix(".json")
-                if out_path.exists() and json_path.exists():
-                    if (warped_multiclass == class_value).sum() >= MIN_CLASS_VOXELS:
-                        available.append(class_name)
-                    continue
 
-                mesh = extract_class_mesh(warped_multiclass, class_value, affine)
+                # Force re-extraction whenever the upstream source changes,
+                # otherwise tabs would keep showing stale GT meshes after we
+                # switch them to per-model predictions on a re-run.
+                if out_path.exists() and json_path.exists():
+                    out_path.unlink(missing_ok=True)
+                    json_path.unlink(missing_ok=True)
+
+                if (per_model_volume == class_value).sum() < MIN_CLASS_VOXELS:
+                    continue
+                mesh = extract_class_mesh(per_model_volume, class_value, affine)
                 if mesh is None:
                     continue
                 export_mesh(mesh, out_path)
                 available.append(class_name)
 
-        elif binary_mask is not None:
-            # No GT — use the cached binary warped_mask as a single surface.
-            # Rendered as 'enhancing' so it picks up a tumor-coloured legend
-            # entry; not anatomically a "class" in the BraTS sense.
+        elif binary_fallback_mask is not None:
+            # No GT and no per-model warp — single binary surface coloured as
+            # 'enhancing' for the legend.
             class_name = "enhancing"
             out_path = model_dir / f"{class_name}.glb"
             json_path = out_path.with_suffix(".json")
             if out_path.exists() and json_path.exists():
+                out_path.unlink(missing_ok=True)
+                json_path.unlink(missing_ok=True)
+            pseudo = ((binary_fallback_mask > 0).astype(np.int16)) * 2
+            mesh = extract_class_mesh(pseudo, 2, affine)
+            if mesh is not None:
+                export_mesh(mesh, out_path)
                 available.append(class_name)
-            else:
-                # Encode the binary mask as class-value 2 so extract_class_mesh
-                # picks the matching enhancing-tumor colour from TUMOR_CLASSES.
-                pseudo = ((binary_mask > 0).astype(np.int16)) * 2
-                mesh = extract_class_mesh(pseudo, 2, affine)
-                if mesh is not None:
-                    export_mesh(mesh, out_path)
-                    available.append(class_name)
+            source = "binary_fallback"
 
-        manifest = {
+        manifest: Dict[str, object] = {
             "model": model_name,
             "available_classes": available,
             "brain_bounds": brain_bounds,
+            "axis_labels": axis_labels,
+            "source": source,
         }
         (model_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
         summary[model_name] = manifest

@@ -34,21 +34,38 @@ def _base_transforms(min_spatial_size):
     """
     Deterministic preprocessing applied to all splits.
     min_spatial_size ensures the volume is large enough for the crop stage.
+
+    ``allow_missing_keys=True`` on every label-touching op so production
+    uploads (no GT) are processed cleanly — the transforms simply no-op
+    on the label key when the case_dict doesn't include one.
     """
     return [
-        LoadImaged(keys=["image", "label"]),
-        EnsureChannelFirstd(keys=["image", "label"]),
+        LoadImaged(keys=["image", "label"], allow_missing_keys=True),
+        EnsureChannelFirstd(keys=["image", "label"], allow_missing_keys=True),
         MapLabelValued(
             keys=["label"],
             orig_labels=list(LABEL_MAP.keys()),
             target_labels=list(LABEL_MAP.values()),
+            allow_missing_keys=True,
         ),
-        Orientationd(keys=["image", "label"], axcodes=ORIENTATION_AXCODES),
+        Orientationd(
+            keys=["image", "label"], axcodes=ORIENTATION_AXCODES,
+            allow_missing_keys=True,
+        ),
         NormalizeIntensityd(keys=["image"], nonzero=True, channel_wise=True),
-        CropForegroundd(keys=["image", "label"], source_key="image", allow_smaller=True),
+        CropForegroundd(
+            keys=["image", "label"], source_key="image",
+            allow_smaller=True, allow_missing_keys=True,
+        ),
         # Ensure we never end up smaller than the required crop size
-        SpatialPadd(keys=["image", "label"], spatial_size=min_spatial_size, mode="constant"),
-        EnsureTyped(keys=["image", "label"], dtype=[torch.float32, torch.long]),
+        SpatialPadd(
+            keys=["image", "label"], spatial_size=min_spatial_size,
+            mode="constant", allow_missing_keys=True,
+        ),
+        EnsureTyped(
+            keys=["image", "label"], dtype=[torch.float32, torch.long],
+            allow_missing_keys=True,
+        ),
     ]
 
 
@@ -59,11 +76,12 @@ def get_train_transforms(patch_size=PATCH_SIZE) -> Compose:
             keys=["image", "label"],
             roi_size=patch_size,
             random_size=False,
+            allow_missing_keys=True,
         ),
-        RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=0),
-        RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=1),
-        RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=2),
-        RandRotate90d(keys=["image", "label"], prob=0.5, max_k=3),
+        RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=0, allow_missing_keys=True),
+        RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=1, allow_missing_keys=True),
+        RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=2, allow_missing_keys=True),
+        RandRotate90d(keys=["image", "label"], prob=0.5, max_k=3, allow_missing_keys=True),
         RandScaleIntensityd(keys=["image"], factors=0.1, prob=0.5),
         RandShiftIntensityd(keys=["image"], offsets=0.1, prob=0.5),
     ]
@@ -73,7 +91,10 @@ def get_train_transforms(patch_size=PATCH_SIZE) -> Compose:
 def get_val_transforms(spatial_size=VAL_SPATIAL_SIZE) -> Compose:
     """Validation pipeline: base + center crop. No augmentation."""
     val_crop = [
-        CenterSpatialCropd(keys=["image", "label"], roi_size=spatial_size),
+        CenterSpatialCropd(
+            keys=["image", "label"], roi_size=spatial_size,
+            allow_missing_keys=True,
+        ),
     ]
     return Compose(_base_transforms(min_spatial_size=spatial_size) + val_crop)
 

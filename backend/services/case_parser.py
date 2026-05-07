@@ -93,11 +93,16 @@ def parse_case_folder(folder: Path) -> Dict[str, Any]:
 
     image_paths = [str(modality_paths[m]) for m in REQUIRED_MODALITIES]
 
-    return {
+    case: Dict[str, Any] = {
         "case_id": case_id,
         "image": image_paths,
-        "label": str(label_path) if label_path else None,
     }
+    # Only include the label key when GT is actually present. MONAI's
+    # LoadImaged tries Path(None) when the value is None, which crashes
+    # the whole pipeline before any model can run.
+    if label_path is not None:
+        case["label"] = str(label_path)
+    return case
 
 
 def is_registration_cached(case_id: str) -> bool:

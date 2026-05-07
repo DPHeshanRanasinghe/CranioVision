@@ -170,6 +170,14 @@ class JobManager:
         job.started_at = time.time()
 
         def progress_bridge(stage: str, pct: int, message: str) -> None:
+            # The pipeline emits ("done", 100) when ITS work finishes — but
+            # the job still has viewer artifacts, per-model warps, and mesh
+            # extraction left. The frontend treats stage=="done" or pct>=100
+            # as completion and races to fetch /result, hitting a 409. Demote
+            # the pipeline's terminal event so only the job-level finaliser
+            # (line ~229) gets to report true completion.
+            if stage == "done" and pct >= 100 and job.state == "running":
+                stage, pct = "pipeline_done", 92
             event = ProgressEvent(stage=stage, percent=pct, message=message)
             asyncio.run_coroutine_threadsafe(self._publish(job, event), loop)
 
@@ -193,6 +201,22 @@ class JobManager:
                 progress_bridge(
                     "warning", 99,
                     f"Artifact save failed (viewer may be limited): {e}",
+                )
+
+            # Warp each per-model prediction from the preprocessed grid into
+            # MNI space using the cached ANTs transforms. Without this every
+            # model tab in the 3D viewer rendered the same shared GT mesh,
+            # contradicting the per-model volumes in the metrics panel.
+            try:
+                progress_bridge(
+                    "warp_predictions", 95,
+                    "Warping per-model predictions to MNI...",
+                )
+                self._save_warped_predictions(job)
+            except Exception as e:
+                progress_bridge(
+                    "warning", 96,
+                    f"Per-model warp failed (viewer falls back to GT): {e}",
                 )
 
             # Extract marching-cubes meshes (brain shell + per-class tumor)
@@ -279,12 +303,91 @@ class JobManager:
                     str(out_path),
                 )
 
+    def _save_warped_predictions(self, job: Job) -> None:
+        """
+        Warp each per-model prediction from the BraTS-preprocessed grid to MNI
+        space using the cached patient->MNI transforms. The mesh extractor
+        then builds per-model tumor surfaces from these warped volumes, so
+        switching tabs in the 3D viewer shows the actual model differences.
+
+        Why we can use the cached transforms (computed against patient T1):
+        ANTs apply_transforms operates in physical world coordinates, not
+        voxel indices. As long as the prediction NIfTI carries the correct
+        affine for its own grid (which MONAI's MetaTensor tracks through
+        Orientation/Crop/Pad), the same patient->MNI warp applies cleanly.
+
+        nearestNeighbor interpolation is mandatory: predictions are label
+        volumes (1=edema, 2=enhancing, 3=necrotic). Linear interpolation
+        smears small classes — necrotic in particular — into background.
+        """
+        import nibabel as nib
+        import numpy as np
+
+        if job.result is None:
+            return
+
+        preprocessed_affine = job.result.get("preprocessed_affine")
+        if preprocessed_affine is None:
+            return  # pipeline didn't expose the affine — skip silently
+
+        # Cached registration paths
+        project_root = Path(__file__).resolve().parents[2]
+        cache_dir = project_root / "outputs" / "atlas_cache" / job.case_id
+        fwd_warp = cache_dir / "fwd_warp.nii.gz"
+        fwd_affine = cache_dir / "fwd_affine.mat"
+        mni_path = (
+            project_root
+            / "atlas_data"
+            / "MNI152NLin2009cAsym_1mm_T1_brain.nii.gz"
+        )
+        if not (fwd_warp.exists() and fwd_affine.exists() and mni_path.exists()):
+            return  # no cache for this case — mesh extractor falls back to GT
+
+        try:
+            import ants
+        except Exception:
+            return
+
+        artifacts = job.artifacts_dir
+        out_dir = artifacts / "predictions_mni"
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        affine_np = np.asarray(preprocessed_affine, dtype=np.float64)
+        if affine_np.ndim == 3:  # may carry a leading batch/channel dim
+            affine_np = affine_np[0]
+
+        fixed = ants.image_read(str(mni_path))
+
+        for model_name, pred_tensor in job.result["predictions"].items():
+            out_path = out_dir / f"{model_name}.nii.gz"
+            if out_path.exists():
+                continue
+
+            pred_np = pred_tensor.detach().cpu().numpy().astype(np.int16)
+
+            # Save the preprocessed-space prediction with its true patient
+            # affine so ANTs can map it through the cached patient->MNI warp.
+            tmp_path = out_dir / f"{model_name}_preprocessed.nii.gz"
+            nib.save(nib.Nifti1Image(pred_np, affine_np), str(tmp_path))
+
+            try:
+                moving = ants.image_read(str(tmp_path))
+                warped = ants.apply_transforms(
+                    fixed=fixed,
+                    moving=moving,
+                    transformlist=[str(fwd_warp), str(fwd_affine)],
+                    interpolator="nearestNeighbor",
+                )
+                ants.image_write(warped, str(out_path))
+            finally:
+                tmp_path.unlink(missing_ok=True)
+
     def _save_mesh_artifacts(self, job: Job) -> None:
         """
         Build the MNI brain shell (cached process-wide) and per-class tumor
-        meshes from the cached registration. All four model tabs share the
-        same warped GT tumor mesh — Phase 4 design choice so the surfaces
-        always sit cleanly inside the atlas shell.
+        meshes from per-model predictions warped to MNI space. Falls back to
+        the shared GT-warped mesh when the per-model warps aren't available
+        (no cached registration, or pipeline failure earlier).
         """
         from services.mesh_extractor import extract_meshes_for_job
 
@@ -301,6 +404,7 @@ class JobManager:
             case_id=job.case_id,
             model_names=model_names,
             gt_mask_path=gt_mask_path,
+            predictions_mni_dir=job.artifacts_dir / "predictions_mni",
         )
 
     async def run_xai(

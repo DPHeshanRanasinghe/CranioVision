@@ -21,13 +21,14 @@ while SwinUNETR and nnU-Net produce inconsistent or broken heatmaps.
 
 Atlas architecture
 ------------------
-For demo cases (where GT mask exists), atlas analysis uses the
-GT-mask-based registration cached during Phase 3 Week 1. This means all
-4 predictions in the report share the same anatomical context — which
-is clinically reasonable because the predictions are 99%+ unanimous anyway,
-and avoids the affine-mismatch issues of warping preprocessed predictions.
-For new patient uploads (no GT), the ensemble prediction is used as the
-registration mask.
+ANTs registration of patient T1 -> MNI152 runs ONCE (cached for demo cases).
+After registration, each model's prediction is warped from preprocessed
+patient space into MNI using the same cached forward transforms (with
+nearestNeighbor interpolation, since predictions are integer label volumes).
+Anatomical context (Harvard-Oxford lobes/regions, hemisphere lateralization)
+and eloquent-cortex distances are then computed INDEPENDENTLY per prediction.
+This honours the product premise that AI provides the segmentation — atlas
+results genuinely reflect what each model predicted, not the ground truth.
 
 Usage
 -----
@@ -123,7 +124,7 @@ def _load_val_dice(model_names: Sequence[str]) -> Dict[str, float]:
 
 
 # -----------------------------------------------------------------------------
-# ATLAS HELPER (Option 1 — use cached registration's warped mask for analysis)
+# ATLAS HELPER — per-model warping + analysis
 # -----------------------------------------------------------------------------
 
 def _run_atlas_analysis(
@@ -131,15 +132,17 @@ def _run_atlas_analysis(
     case_id: str,
     progress: ProgressFn,
     prediction_names: List[str],
+    predictions: Optional[Dict[str, "torch.Tensor"]] = None,
+    preprocessed_affine: Optional[np.ndarray] = None,
 ) -> Dict[str, Dict]:
     """
-    Run atlas registration once (using GT mask if available, else ensemble),
-    then perform anatomical + eloquent analysis on the cached warped mask.
+    Run atlas registration once, then warp each per-model prediction into MNI
+    using the cached forward transforms and run anatomy + eloquent INDEPENDENTLY
+    on each warped prediction.
 
-    Returns a dict with the SAME analysis attached to each prediction name.
-    This is intentional: the anatomical context of THIS CASE is the same
-    regardless of which model produced the segmentation. Predictions are
-    99%+ unanimous so per-prediction anatomy would be near-identical anyway.
+    Falls back to the legacy shared-GT analysis when ``predictions`` or
+    ``preprocessed_affine`` is not provided (e.g. older callers, or cases where
+    the affine could not be recovered from the MetaTensor).
     """
     atlas_results: Dict[str, Dict] = {}
 
@@ -159,10 +162,10 @@ def _run_atlas_analysis(
         if t1n_path is None:
             raise RuntimeError("Cannot find T1n path in case_dict")
 
-        # Use GT mask for registration if available (demo case),
-        # else fall back to no-mask whole-brain registration.
-        # In production, you'd save the ensemble prediction here, but that
-        # requires careful affine handling — out of scope for the demo path.
+        # GT mask used only for the patient->MNI alignment when available
+        # (it gives ANTs an extra anatomical anchor). Anatomy/eloquent are
+        # NOT computed from this mask — they're computed from each model's
+        # warped prediction below.
         registration_mask_path = case_dict.get("label")
 
         progress("atlas", 80, "Registering patient T1 to MNI152")
@@ -175,31 +178,94 @@ def _run_atlas_analysis(
             verbose=False,
         )
 
-        progress("atlas", 92, "Computing anatomical context")
-
-        # Run anatomy + eloquent ONCE on the cached warped mask
-        anatomy = analyze_tumor_anatomy(
-            warped_mask=reg["warped_mask"],
-            verbose=False,
-        )
-        eloquent = compute_eloquent_distance(
-            warped_mask=reg["warped_mask"],
-            verbose=False,
+        per_model_mode = (
+            predictions is not None
+            and preprocessed_affine is not None
+            and reg.get("transforms") is not None
         )
 
-        # Attach the same analysis to every prediction name
-        # (since they share the same patient anatomy)
-        shared_result = {
-            "anatomy": anatomy,
-            "eloquent": _serialize_eloquent(eloquent),
-            "registration_source": (
-                "ground_truth_mask" if registration_mask_path else "no_mask"
-            ),
-            "shared_across_predictions": True,
-        }
+        registration_source = (
+            "ground_truth_mask" if registration_mask_path else "no_mask"
+        )
 
-        for name in prediction_names:
-            atlas_results[name] = shared_result
+        if per_model_mode:
+            import ants
+            import nibabel as nib
+            import tempfile
+            from .atlas.download import get_atlas_paths
+
+            transforms = reg["transforms"]
+            transform_list = [transforms["warp"], transforms["affine"]]
+            atlas_paths = get_atlas_paths()
+            mni_fixed = ants.image_read(str(atlas_paths["mni152_t1_brain"]))
+
+            affine_np = np.asarray(preprocessed_affine, dtype=np.float64)
+            if affine_np.ndim == 3:
+                affine_np = affine_np[0]
+
+            n_preds = max(1, len(predictions))
+            with tempfile.TemporaryDirectory() as tmp_str:
+                tmp_dir = Path(tmp_str)
+                for i, (name, pred_tensor) in enumerate(predictions.items()):
+                    pct = 82 + int((i / n_preds) * 14)
+                    progress(
+                        "atlas", pct,
+                        f"Warping {name} to MNI + anatomical analysis",
+                    )
+
+                    pred_np = pred_tensor.detach().cpu().numpy().astype(np.int16)
+                    tmp_pred = tmp_dir / f"{name}_preprocessed.nii.gz"
+                    nib.save(
+                        nib.Nifti1Image(pred_np, affine_np),
+                        str(tmp_pred),
+                    )
+
+                    moving = ants.image_read(str(tmp_pred))
+                    warped = ants.apply_transforms(
+                        fixed=mni_fixed,
+                        moving=moving,
+                        transformlist=transform_list,
+                        interpolator="nearestNeighbor",
+                    )
+
+                    anatomy = analyze_tumor_anatomy(
+                        warped_mask=warped,
+                        verbose=False,
+                    )
+                    eloquent = compute_eloquent_distance(
+                        warped_mask=warped,
+                        verbose=False,
+                    )
+
+                    atlas_results[name] = {
+                        "anatomy": anatomy,
+                        "eloquent": _serialize_eloquent(eloquent),
+                        "registration_source": registration_source,
+                        "shared_across_predictions": False,
+                    }
+        else:
+            # Legacy path — run once on the cached GT-warped mask and attach
+            # the same result to every prediction. Used only when callers
+            # don't supply per-model predictions / affine.
+            progress("atlas", 92, "Computing anatomical context")
+
+            anatomy = analyze_tumor_anatomy(
+                warped_mask=reg["warped_mask"],
+                verbose=False,
+            )
+            eloquent = compute_eloquent_distance(
+                warped_mask=reg["warped_mask"],
+                verbose=False,
+            )
+
+            shared_result = {
+                "anatomy": anatomy,
+                "eloquent": _serialize_eloquent(eloquent),
+                "registration_source": registration_source,
+                "shared_across_predictions": True,
+            }
+            for name in prediction_names:
+                atlas_results[name] = shared_result
 
     except Exception as e:
         atlas_results["_error"] = f"{type(e).__name__}: {e}"
@@ -309,19 +375,55 @@ def run_full_analysis(
         per_model_metrics[name] = m
 
     # 5) Agreement (only over the individual models)
+    #
+    # Whole-volume agreement is dominated by background voxels, where every
+    # model trivially predicts 0. The clinically interesting number is how
+    # often the models AGREE inside the tumor envelope. We report both:
+    #
+    #   unanimous_fraction       : (all models agree) / (all voxels)
+    #   tumor_region_agreement   : (all models agree AND it's a tumor voxel)
+    #                              / (any model called it tumor)
+    #
+    # The denominator for tumor agreement is the union of all model tumor
+    # masks, so a region only one model picked up still counts as
+    # "disagreement" — that's the desired conservative reading.
     progress("agreement", 75, "Computing model agreement")
     individual_preds = [per_model_preds[n] for n in available_models]
     stacked = torch.stack(individual_preds)
     mode_pred = torch.mode(stacked, dim=0).values
-    agree_count = (stacked == mode_pred.unsqueeze(0)).float().sum(dim=0)
-    unanimous = (agree_count == len(individual_preds)).float().mean().item()
+    all_agree = (stacked == mode_pred.unsqueeze(0)).all(dim=0)  # bool
+    unanimous = all_agree.float().mean().item()
+
+    any_tumor = (stacked > 0).any(dim=0)             # union of tumor masks
+    unanimous_tumor = all_agree & any_tumor          # agreed AND tumor
+    n_any_tumor = int(any_tumor.sum().item())
+    if n_any_tumor > 0:
+        tumor_region_agreement = float(unanimous_tumor.sum().item()) / n_any_tumor
+    else:
+        tumor_region_agreement = 0.0
 
     agreement = {
         "unanimous_fraction": round(unanimous, 4),
+        "tumor_region_agreement": round(tumor_region_agreement, 4),
         "n_models_compared": len(individual_preds),
     }
 
-    # 6) Atlas analysis — Option 1: shared anatomy from cached GT registration
+    # Affine of the preprocessed grid in patient world coordinates. Needed
+    # both by the atlas analysis (to warp each prediction to MNI for anatomy
+    # + eloquent) and by the backend mesh extractor (for the 3D viewer).
+    # MONAI's MetaTensor tracks the affine through Orientation/Crop/Pad.
+    preprocessed_affine = None
+    try:
+        aff = getattr(full_image, "affine", None)
+        if aff is not None:
+            preprocessed_affine = (
+                aff.detach().cpu().numpy() if hasattr(aff, "detach") else np.asarray(aff)
+            )
+    except Exception:
+        preprocessed_affine = None
+
+    # 6) Atlas analysis — per-model: warp each prediction to MNI, then run
+    # anatomy + eloquent independently for each one.
     atlas_results: Dict[str, Dict] = {}
     if include_atlas:
         atlas_results = _run_atlas_analysis(
@@ -329,6 +431,8 @@ def run_full_analysis(
             case_id=case_id,
             progress=progress,
             prediction_names=list(per_model_preds.keys()),
+            predictions=per_model_preds,
+            preprocessed_affine=preprocessed_affine,
         )
 
     progress("done", 100, "Analysis complete")
@@ -343,6 +447,7 @@ def run_full_analysis(
         "weights_used": weights,
         "available_models": available_models,
         "elapsed_seconds": round(elapsed, 1),
+        "preprocessed_affine": preprocessed_affine,
     }
 
 

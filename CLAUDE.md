@@ -69,26 +69,45 @@ CranioVision/
 - `GET /jobs/{id}/predictions/{model}.nii.gz` segmentation masks
 - `GET /jobs/{id}/xai/{model}/{class}.nii.gz` Grad-CAM heatmaps
 
-**Frontend (Next.js, port 3000) — working but ugly:**
-- Drag-and-drop folder upload works
+**Frontend (Next.js, port 3000) — working:**
+- Drag-and-drop folder upload works (with or without GT)
 - SSE+polling fallback for progress (this is critical, do not remove)
-- All 4 model predictions display
+- All 4 model predictions display, with per-model anatomy/eloquent
 - XAI explain button works
-- PDF report generates and downloads
+- PDF report generates and downloads (5 pages)
 - `lib/api.ts` and `lib/types.ts` are correct, don't change types
 
-**Niivue viewer — half-broken:**
-- Loads NIfTI files correctly
-- Shows 3-view multi-planar slices in greyscale
-- Tumor segmentation overlay works
-- **BUG: Grad-CAM heatmap shows almost nothing** — colormap/threshold issue
-- **DESIGN PROBLEM: Not rotatable 3D mesh, just flat 2D slices**
+**3D viewer — Plotly Mesh3d (`components/PlotlyBrainViewer.tsx`):**
+- Loads `.glb` + `.json` mesh sidecars via `/jobs/{id}/meshes/...`
+- Brain shell (semi-transparent MNI atlas) + per-class tumor meshes
+- Per-model meshes (tabs visibly differ) — backed by warped predictions in
+  `predictions_mni/{model}.nii.gz`
+- L/R orientation labels derived from MNI affine, anchored to brain bbox
+- Two-mode: Segmentation / XAI heatmap mesh (vertex-colored magma)
+- DO NOT swap back to Niivue — it was abandoned in Phase 4 Week 3.
+
+**PDF report layout (5 pages):**
+1. Clinical summary (single selected model)
+2. Model comparison (all 4)
+3. Anatomical context — lobe pie + top regions table
+4. Eloquent cortex & surgical risk — bar chart + clinical note
+5. XAI heatmaps
+Title is "CranioVision Segmentation Analysis Report" (NOT "Clinical Report" —
+deliberately less risky for academic / non-FDA-cleared demo).
 
 ## Critical Architectural Decisions Already Made (Do Not Question)
 
-1. **Atlas Option 1 — shared anatomy.** All 4 predictions share one atlas
-   analysis (from GT-mask-based registration). Don't try to register each
-   prediction separately. The result has `"shared_across_predictions": true`.
+1. **Atlas — per-model analysis (REVISED 2026-05-06).** ANTs registration
+   runs ONCE per case (cached). Each model's prediction is then warped to
+   MNI in-memory using the cached forward transforms with `nearestNeighbor`
+   interpolation, and `analyze_tumor_anatomy` + `compute_eloquent_distance`
+   run independently per prediction. Result has
+   `"shared_across_predictions": false`. Reason: the product premise is that
+   AI provides the segmentation, so atlas results must reflect each model's
+   own prediction, not the GT. Implemented in
+   `src/cranovision/pipeline.py:_run_atlas_analysis`. Old "shared anatomy
+   from GT" path is kept as a fallback when `predictions` or
+   `preprocessed_affine` is missing. ~10-12s extra runtime per case.
 2. **XAI shared explainer.** Attention U-Net is the explainer for ALL
    predictions, regardless of which model the user picks. This was validated
    empirically in Phase 3.
@@ -100,6 +119,20 @@ CranioVision/
    `http://localhost:8000` (bypasses Next.js proxy buffering). With polling
    fallback if SSE silent for 8s. This is in `lib/api.ts:subscribeToProgress`.
    DO NOT remove the polling fallback.
+6. **Pipeline `("done", 100)` is intercepted.** The pipeline emits
+   `progress("done", 100)` when its analysis is finished, but the backend
+   still has viewer artifacts, per-model warps, and mesh extraction left.
+   `job_manager._run_in_worker.progress_bridge` demotes that event to
+   `("pipeline_done", 92)` while `job.state == "running"`. Only the
+   backend's terminal emission (after `job.state = "done"`) carries the
+   true 100. Without this, the frontend races to `/result` and gets 409.
+7. **No-GT uploads supported.** When the upload has no segmentation file,
+   `case_parser.parse_case_folder` OMITS the `label` key entirely (does NOT
+   set it to `None`), and every label-touching MONAI transform in
+   `src/cranovision/data/transforms.py` carries `allow_missing_keys=True`.
+   Pipeline branches off `sample.get("label")` and `case_dict.get("label")`
+   already handle the no-GT path (no Dice metrics, no GT-anchored ANTs
+   registration, mesh extractor falls back to per-model warped predictions).
 
 ## Phase 4 Week 3 — What You're Building
 
