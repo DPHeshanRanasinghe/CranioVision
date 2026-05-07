@@ -17,6 +17,7 @@ __pycache__/
 # Medical data / datasets
 data/*
 !data/demo.mp4
+!data/demo-preview.gif
 *.nii
 *.nii.gz
 *.dcm

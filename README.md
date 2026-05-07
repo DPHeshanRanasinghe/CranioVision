@@ -10,9 +10,9 @@ The project targets a real gap in clinical tooling: there is no accessible, open
 
 ## Demo
 
-<video src="data/demo.mp4" controls width="100%"></video>
+[![CranioVision demo preview](data/demo-preview.gif)](data/demo.mp4)
 
-[Watch the demo video](data/demo.mp4)
+[Watch the full demo video](data/demo.mp4)
 
 ---
 
