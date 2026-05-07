@@ -114,41 +114,59 @@ Our frontend provides an interactive experience where radiologists can view thes
 
 ```
 CranioVision/
-├── src/cranovision/
-│   ├── config.py                     Paths + hyperparameters
-│   ├── data/
-│   │   ├── dataset.py                BraTS loader + train/val/test splits
-│   │   └── transforms.py             MONAI preprocessing + augmentation
-│   ├── models/
-│   │   ├── attention_unet.py         MONAI AttentionUnet factory
-│   │   ├── swin_unetr.py             MONAI SwinUNETR factory
-│   │   └── nnunet_model.py           DynUNet with nnU-Net plan
-│   ├── training/
-│   │   ├── metrics.py                Dice + BraTS region metrics
-│   │   └── trainer.py                Unified training loop
-│   └── inference/
-│       ├── predict.py                Single-model inference + volumes
-│       ├── mc_dropout.py             Stochastic uncertainty
-│       ├── grad_cam.py               3D patch-based Grad-CAM
-│       └── ensemble.py               Weighted soft voting + agreement
-├── notebooks/
-│   ├── train_*.ipynb                 Training notebooks (3 models)
-│   ├── inference_*.ipynb             Per-model + ensemble test eval
-│   ├── *_demo.ipynb                  Per-model demo notebooks
-│   ├── mc_dropout_viz.ipynb          Uncertainty visualization
-│   ├── gradcam_viz.ipynb             XAI heatmap visualization
-│   ├── single_model_demo.ipynb       Single-model pipeline demo
-│   ├── full_demo.ipynb               Full 3-model ensemble pipeline
-│   ├── inference_ensemble.ipynb      Ensemble test-set evaluation
-│   └── comparison_report.ipynb       Side-by-side model comparison
-├── backend/                          FastAPI server orchestrator
-├── frontend/                         Next.js 14 + React 3D UI
-├── tests/
-│   └── test_inference.py             pytest suite (22/22 passing)
-├── models/                           Checkpoints (gitignored)
-├── outputs/                          Predictions, curves, JSON reports
-├── data/                             BraTS data (gitignored)
-└── requirements.txt
+
++-- atlas_data/
+|   +-- HarvardOxford-cort-maxprob-thr25-1mm.nii.gz
+|   +-- HarvardOxford-cort-maxprob-thr25-1mm_resampled.nii.gz
+|   +-- HarvardOxford-sub-maxprob-thr25-1mm.nii.gz
+|   +-- HarvardOxford-sub-maxprob-thr25-1mm_resampled.nii.gz
+|   +-- MNI152NLin2009cAsym_1mm_brain_mask.nii.gz
+|   +-- MNI152NLin2009cAsym_1mm_T1_brain.nii.gz
++-- backend/                          FastAPI app (not expanded)
++-- data/
+|   +-- demo-preview.gif
+|   +-- demo.mp4
+|   +-- raw/                           BraTS dataset files (not expanded)
+|   +-- splits/
++-- frontend/                         Next.js app (not expanded)
++-- models/
+|   +-- attention_unet_best.pth
+|   +-- nnunet_best.pth
+|   +-- swin_unetr_best.pth
++-- notebooks/
+|   +-- atlas_demo.ipynb
+|   +-- attention_unet_demo.ipynb
+|   +-- clinical_report_demo.ipynb
+|   +-- comparison_report.ipynb
+|   +-- full_demo.ipynb
+|   +-- gradcam_viz.ipynb
+|   +-- inference_attention_unet.ipynb
+|   +-- inference_ensemble.ipynb
+|   +-- inference_nnunet.ipynb
+|   +-- inference_swin_unetr.ipynb
+|   +-- mc_dropout_viz.ipynb
+|   +-- nnunet_demo.ipynb
+|   +-- swin_unetr_demo.ipynb
+|   +-- train_attention_unet.ipynb
+|   +-- train_nnunet.ipynb
+|   +-- train_swin_unetr.ipynb
++-- outputs/
+|   +-- atlas_cache/
+|   +-- reports/
++-- src/
+|   +-- cranovision/
+|       +-- atlas/
+|       +-- data/
+|       +-- inference/
+|       +-- models/
+|       +-- reporting/
+|       +-- training/
++-- tests/
+|   +-- __init__.py
+|   +-- test_inference.py
++-- .gitignore
++-- pytest.ini
++-- README.md
 ```
 
 ---
