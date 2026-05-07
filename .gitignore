@@ -1,28 +1,51 @@
 # ===== CranioVision .gitignore =====
+#
+# Dev branch policy:
+# Keep the commit surface focused on core source and docs.
+# Track: src/, README.md, .gitignore, and any intentional root metadata.
+# Do not track local apps, notebooks, datasets, model artifacts, outputs, tests,
+# machine-specific assistant files, or generated caches.
 
-# ── Medical data (NEVER commit) ──
-data/raw/
-data/processed/
+# Medical data / datasets
+data/
 *.nii
 *.nii.gz
 *.dcm
 *.dicom
 
-# ── Model checkpoints ──
-models/*.pth
-models/*.pt
-models/*.ckpt
-models/*.onnx
+# Model checkpoints and local model artifacts
+models/
+*.pth
+*.pt
+*.ckpt
+*.onnx
 
-# ── Outputs and results ──
+# Outputs and experiment results
 outputs/
-!outputs/.gitkeep
 logs/
 wandb/
 mlruns/
 lightning_logs/
 
-# ── Python ──
+# Local application folders not intended for this branch
+backend/
+frontend/
+
+# Notebooks and tests not intended for this branch
+notebooks/
+tests/
+pytest.ini
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Project-local/private folders
+atlas_data/
+configs/
+.claude/
+CLAUDE.md
+claude.md
+
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
@@ -34,54 +57,36 @@ build/
 dist/
 .eggs/
 
-# ── Virtual environments ──
+# Virtual environments
 .venv/
 venv/
 env/
 ENV/
 
-# ── Jupyter ──
-.ipynb_checkpoints/
-*.ipynb_checkpoints
-
-# ── IDE ──
+# IDE
 .vscode/
 .idea/
 *.swp
 
-
-# ── OS ──
+# OS
 .DS_Store
 Thumbs.db
 desktop.ini
 
-# ── Testing / coverage ──
+# Testing / coverage caches
 .pytest_cache/
 .coverage
 htmlcov/
 .tox/
 
-# ── Environment files with secrets ──
+# Environment files with secrets
 .env
 .env.local
 *.key
 *.pem
 
-# ── Temporary ──
+# Temporary
 tmp/
 temp/
 *.tmp
 *.bak
-
-# ── Project-specific (not for public repo) ──
-CLAUDE.md
-claude.md
-atlas_data/
-backend/
-frontend/
-configs/
-models/
-notebooks/
-tests/
-pytest.ini
-.claude/
