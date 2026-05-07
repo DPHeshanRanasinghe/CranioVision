@@ -80,3 +80,16 @@ tmp/
 temp/
 *.tmp
 *.bak
+
+# ── Project-specific (not for public repo) ──
+CLAUDE.md
+claude.md
+atlas_data/
+backend/
+frontend/
+configs/
+models/
+notebooks/
+tests/
+pytest.ini
+.claude/
