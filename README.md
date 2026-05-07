@@ -290,7 +290,7 @@ Residual-block encoder/decoder with instance normalization. Uses nnU-Net's archi
 ## Author
 
 **Heshan Ranasinghe**
-University of Moratuwa, Faculty of Engineering
+University of Moratuwa, Faculty of Engineering,
 Electronic and Telecommunication Engineering, Batch 23
 
 ---
