@@ -66,16 +66,16 @@ Our test-set evaluation shows the Dice-weighted ensemble achieves 0.7853 — sta
                                     ▼
               ┌─────────────────────────────────────────┐
               │        Preprocessing (MONAI)            │
-              │  • Orientation → RAS                     │
-              │  • Z-score normalization (per-modality)  │
-              │  • Foreground crop                       │
+              │  • Orientation → RAS                    │
+              │  • Z-score normalization (per-modality) │
+              │  • Foreground crop                      │
               └─────────────────────────────────────────┘
                                     │
            ┌────────────────────────┼────────────────────────┐
            ▼                        ▼                        ▼
   ┌────────────────┐      ┌─────────────────┐      ┌────────────────┐
-  │ Attention U-Net│      │   SwinUNETR      │      │ nnU-Net-style  │
-  │    (23.6M)     │      │    (62.2M)       │      │    (31.4M)     │
+  │ Attention U-Net│      │   SwinUNETR     │      │ nnU-Net-style  │
+  │    (23.6M)     │      │    (62.2M)      │      │    (31.4M)     │
   └────────────────┘      └─────────────────┘      └────────────────┘
            │                        │                        │
            └────────────────────────┼────────────────────────┘
