@@ -1,1 +1,0 @@
-"""CranioVision test suite."""
