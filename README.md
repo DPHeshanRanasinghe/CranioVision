@@ -8,14 +8,6 @@ The project targets a real gap in clinical tooling: there is no accessible, open
 
 ---
 
-## Demo
-
-[![CranioVision demo preview](data/demo-preview.gif)](data/demo.mp4)
-
-[Watch the full demo video](data/demo.mp4)
-
----
-
 ## Core Capabilities
 
 | Capability | What it does | Why it matters clinically |
