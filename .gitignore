@@ -15,7 +15,8 @@ __pycache__/
 # machine-specific assistant files, or generated caches.
 
 # Medical data / datasets
-data/
+data/*
+!data/demo.mp4
 *.nii
 *.nii.gz
 *.dcm

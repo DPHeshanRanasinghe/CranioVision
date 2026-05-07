@@ -8,6 +8,14 @@ The project targets a real gap in clinical tooling: there is no accessible, open
 
 ---
 
+## Demo
+
+<video src="data/demo.mp4" controls width="100%"></video>
+
+[Watch the demo video](data/demo.mp4)
+
+---
+
 ## Core Capabilities
 
 | Capability | What it does | Why it matters clinically |
