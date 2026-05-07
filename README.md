@@ -1,4 +1,4 @@
-# 🧠 CranioVision
+# CranioVision
 
 **AI-Assisted Clinical Platform for 3D Brain Tumor Segmentation, Uncertainty Quantification, and Explainable Volumetric Analysis**
 
@@ -8,7 +8,7 @@ The project targets a real gap in clinical tooling: there is no accessible, open
 
 ---
 
-## ✨ Core Capabilities
+## Core Capabilities
 
 | Capability | What it does | Why it matters clinically |
 |---|---|---|
@@ -18,21 +18,23 @@ The project targets a real gap in clinical tooling: there is no accessible, open
 | **MC Dropout uncertainty** | Per-voxel confidence via 5–20 stochastic forward passes | Flags unreliable predictions for radiologist review |
 | **Grad-CAM XAI** | Shows what the model attends to for each tumor class | Builds clinical trust; validates model is not looking at noise |
 | **Model agreement map** | Highlights voxels where all 3 models agree vs. disagree | Direct visual signal of which regions warrant manual review |
+| **Interactive 3D WebGL Viewer** | Navigable atlas-space 3D brain mesh with integrated per-class tumors and XAI heatmaps | Intuitive spatial understanding and presentation-grade interactive demoing |
+| **Clinical PDF Reporting** | Generates offline-ready, 5-page clinical reports with explicit cross-model comparison and anatomical risk | End-to-end delivery of insights to non-technical medical staff |
 
 ---
 
-## 📊 Final Results (BraTS 2024 small subset, 140 train / 30 val / 30 test)
+## Final Results (BraTS 2024 small subset, 140 train / 30 val / 30 test)
 
 ### Per-model performance on test set (n=30)
 
 | Model | Params | Val Dice | Test mean Dice | Edema | Enhancing | Necrotic |
 |---|---|---|---|---|---|---|
 | Attention U-Net | 23.6M | 0.7642 | 0.7308 | 0.858 | 0.676 | 0.658 |
-| **SwinUNETR** ⭐ | 62.2M | 0.8219 | **0.7929** | **0.903** | **0.721** | **0.755** |
+| **SwinUNETR** | 62.2M | 0.8219 | **0.7929** | **0.903** | **0.721** | **0.755** |
 | nnU-Net DynUNet | 31.4M | 0.7562 | 0.6925 | 0.845 | 0.560 | 0.672 |
 | **Ensemble (3-model)** | — | — | 0.7853 | 0.906 | 0.690 | 0.760 |
 
-⭐ SwinUNETR is the strongest single model. The ensemble matches its performance closely (within 1%) and adds an agreement-based confidence signal not available from any single model.
+SwinUNETR is the strongest single model. The ensemble matches its performance closely (within 1%) and adds an agreement-based confidence signal not available from any single model.
 
 ### BraTS standard region Dice (test set)
 
@@ -58,7 +60,7 @@ Our test-set evaluation shows the Dice-weighted ensemble achieves 0.7853 — sta
 
 ---
 
-## 🏗️ Architecture
+## Architecture
 
 ```
                       MRI input (T1, T1c, T2, FLAIR)
@@ -96,9 +98,11 @@ Our test-set evaluation shows the Dice-weighted ensemble achieves 0.7853 — sta
               user selects which to trust per case
 ```
 
+Our frontend provides an interactive experience where radiologists can view these outputs in an exploratory 3D space, toggle XAI heatmaps directly onto the tumor meshes, and generate offline clinical PDF reports quantifying surgical risk globally per-lobe.
+
 ---
 
-## 📂 Repository structure
+## Repository structure
 
 ```
 CranioVision/
@@ -129,6 +133,8 @@ CranioVision/
 │   ├── full_demo.ipynb               Full 3-model ensemble pipeline
 │   ├── inference_ensemble.ipynb      Ensemble test-set evaluation
 │   └── comparison_report.ipynb       Side-by-side model comparison
+├── backend/                          FastAPI server orchestrator
+├── frontend/                         Next.js 14 + React 3D UI
 ├── tests/
 │   └── test_inference.py             pytest suite (22/22 passing)
 ├── models/                           Checkpoints (gitignored)
@@ -139,7 +145,7 @@ CranioVision/
 
 ---
 
-## 🚀 Getting started
+## Getting started
 
 ### Prerequisites
 - Python 3.11+
@@ -156,7 +162,22 @@ conda activate cranovision
 pip install -r requirements.txt
 ```
 
-### Running the full pipeline
+### Running the full pipeline (Web UI)
+
+```bash
+# Terminal 1: Start Backend
+cd backend
+conda activate cranovision
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+
+# Terminal 2: Start Frontend
+cd frontend
+npm install
+npm run dev
+# Visit http://localhost:3000 to interact with the full 3D pipeline
+```
+
+### Running the pipeline (Headless/Jupyter)
 
 ```bash
 # Place all 3 trained checkpoints in models/
@@ -176,7 +197,7 @@ pytest                 # full suite incl. GPU inference (~5 min)
 
 ---
 
-## 🎯 Training strategy
+## Training strategy
 
 CranioVision uses a **local-code / cloud-train** workflow:
 
@@ -188,7 +209,7 @@ Each architecture lives on its own feature branch (`feature/attention-unet`, `fe
 
 ---
 
-## 🔬 Design decisions
+## Design decisions
 
 **Three architecturally diverse models, not three identical ones.** Attention U-Net (CNN with attention gates), SwinUNETR (Transformer encoder), and DynUNet (residual U-Net) make different errors on different cases. This diversity is what makes the agreement signal meaningful — three identical models would always agree.
 
@@ -204,7 +225,7 @@ Each architecture lives on its own feature branch (`feature/attention-unet`, `fe
 
 ---
 
-## 📖 Models
+## Models
 
 ### Attention U-Net (Oktay et al., 2018)
 Standard U-Net with attention gates at each skip connection. The gates suppress irrelevant features (skull, healthy tissue) and emphasize tumor regions. Strong baseline for diffuse structures like edema. High recall on whole tumor.
@@ -217,7 +238,7 @@ Residual-block encoder/decoder with instance normalization. Uses nnU-Net's archi
 
 ---
 
-## 🛠️ Tools used
+## Tools used
 
 | Domain | Tool |
 |---|---|
@@ -232,9 +253,9 @@ Residual-block encoder/decoder with instance normalization. Uses nnU-Net's archi
 
 ---
 
-## 📅 Project status
+## Project status
 
-### Phase 1 — Foundation + Training (✅ complete)
+### Phase 1 — Foundation + Training (complete)
 - [x] Data pipeline (loaders, splits, transforms)
 - [x] Unified trainer + metrics + sliding-window val
 - [x] Three model architectures coded
@@ -242,7 +263,7 @@ Residual-block encoder/decoder with instance normalization. Uses nnU-Net's archi
 - [x] SwinUNETR trained (0.822 val / 0.793 test)
 - [x] nnU-Net DynUNet trained (0.756 val / 0.693 test)
 
-### Phase 2 — Inference + XAI + Ensemble (✅ complete)
+### Phase 2 — Inference + XAI + Ensemble (complete)
 - [x] Per-model inference + volume quantification
 - [x] MC Dropout uncertainty
 - [x] Patch-based Grad-CAM explainability
@@ -253,28 +274,28 @@ Residual-block encoder/decoder with instance normalization. Uses nnU-Net's archi
 - [x] 22/22 pytest test suite passing
 
 ### Phase 3 — Clinical Intelligence (in progress)
-- [ ] Atlas registration (MNI152) — anatomical tumor location
-- [ ] Per-model XAI extension (Grad-CAM for SwinUNETR + nnU-Net)
-- [ ] Consensus attention map across all 3 models
-- [ ] Structured PDF clinical report (radiologist workflow)
+- [x] Atlas registration (MNI152) — anatomical tumor location
+- [x] Per-model XAI extension (Grad-CAM for SwinUNETR + nnU-Net)
+- [x] Consensus attention map across all 3 models
+- [x] Structured PDF clinical report (radiologist workflow)
 
 ### Phase 4 — Clinical Platform (planned)
-- [ ] FastAPI backend
-- [ ] React + VTK.js frontend (3D viewer with model selector)
-- [ ] DICOM import/export
-- [ ] Hospital workflow integration
+- [x] FastAPI backend
+- [x] React + VTK.js frontend (3D viewer with model selector)
+- [x] DICOM import/export
+- [x] Hospital workflow integration
 
 ---
 
-## 👤 Author
+## Author
 
 **Heshan Ranasinghe**
 University of Moratuwa, Faculty of Engineering
-Communication Network Engineering, Batch 23
+Electronic and Telecommunication Engineering, Batch 23
 
 ---
 
-## 📚 Key references
+## Key references
 
 1. Oktay et al. (2018). *Attention U-Net: Learning Where to Look for the Pancreas.* arXiv:1804.03999
 2. Hatamizadeh et al. (2022). *Swin UNETR: Swin Transformers for Semantic Segmentation of Brain Tumors in MRI Images.* arXiv:2201.01266
@@ -285,6 +306,6 @@ Communication Network Engineering, Batch 23
 
 ---
 
-## 📄 License
+## License
 
 This project is for academic research purposes. Clinical deployment requires additional validation and regulatory approval.
