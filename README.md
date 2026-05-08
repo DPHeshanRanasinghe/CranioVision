@@ -281,7 +281,7 @@ Residual-block encoder/decoder with instance normalization. Uses nnU-Net's archi
 
 ## Project status
 
-### Phase 1 — Foundation + Training (complete)
+### Phase 1 — Foundation + Training 
 - [x] Data pipeline (loaders, splits, transforms)
 - [x] Unified trainer + metrics + sliding-window val
 - [x] Three model architectures coded
@@ -289,7 +289,7 @@ Residual-block encoder/decoder with instance normalization. Uses nnU-Net's archi
 - [x] SwinUNETR trained (0.822 val / 0.793 test)
 - [x] nnU-Net DynUNet trained (0.756 val / 0.693 test)
 
-### Phase 2 — Inference + XAI + Ensemble (complete)
+### Phase 2 — Inference + XAI + Ensemble 
 - [x] Per-model inference + volume quantification
 - [x] MC Dropout uncertainty
 - [x] Patch-based Grad-CAM explainability
@@ -299,13 +299,13 @@ Residual-block encoder/decoder with instance normalization. Uses nnU-Net's archi
 - [x] Ensemble test-set evaluation (0.7853 mean Dice, 99.33% agreement)
 - [x] 22/22 pytest test suite passing
 
-### Phase 3 — Clinical Intelligence (in progress)
+### Phase 3 — Clinical Intelligence 
 - [x] Atlas registration (MNI152) — anatomical tumor location
 - [x] Per-model XAI extension (Grad-CAM for SwinUNETR + nnU-Net)
 - [x] Consensus attention map across all 3 models
 - [x] Structured PDF clinical report (radiologist workflow)
 
-### Phase 4 — Clinical Platform (planned)
+### Phase 4 — Clinical Platform 
 - [x] FastAPI backend
 - [x] React + VTK.js frontend (3D viewer with model selector)
 - [x] DICOM import/export
@@ -316,8 +316,10 @@ Residual-block encoder/decoder with instance normalization. Uses nnU-Net's archi
 ## Author
 
 **Heshan Ranasinghe**
-University of Moratuwa, Faculty of Engineering,
-Electronic and Telecommunication Engineering, Batch 23
+Electronic and Telecommunication Engineering,
+Faculty of Engineering, University of Moratuwa.
+Sri Lanka.
+
 
 ---
 
