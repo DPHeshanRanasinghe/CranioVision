@@ -1,61 +1,84 @@
-outputs/
-data/raw/
-*.nii
-*.nii.gz
-__pycache__/
-.ipynb_checkpoints/
-*.pt
-*.pth
 # ===== CranioVision .gitignore =====
 #
-# Dev branch policy:
-# Keep the commit surface focused on core source and docs.
-# Track: src/, README.md, .gitignore, and any intentional root metadata.
-# Do not track local apps, notebooks, datasets, model artifacts, outputs, tests,
-# machine-specific assistant files, or generated caches.
+# Public-facing repository policy:
+#   Track the conceptual work and engineering artifacts that demonstrate
+#   the project's design and capability.
+#   Do not track datasets, trained weights, application code, runtime
+#   outputs, or local development context.
 
-# Medical data / datasets
-data/*
-!data/demo.mp4
-!data/demo-preview.gif
+# ---------------------------------------------------------------------------
+# Medical data and datasets (proprietary / licensed via BraTS)
+# ---------------------------------------------------------------------------
+data/
 *.nii
 *.nii.gz
 *.dcm
 *.dicom
 
-# Model checkpoints and local model artifacts
+# ---------------------------------------------------------------------------
+# Trained models and checkpoints
+# ---------------------------------------------------------------------------
 models/
 *.pth
 *.pt
 *.ckpt
 *.onnx
+*.pb
+*.h5
+*.safetensors
 
-# Outputs and experiment results
+# ---------------------------------------------------------------------------
+# Pipeline outputs (reports, atlas registration cache, logs)
+# ---------------------------------------------------------------------------
 outputs/
 logs/
 wandb/
 mlruns/
 lightning_logs/
+runs/
+tb_logs/
 
-# Local application folders not intended for this branch
+# ---------------------------------------------------------------------------
+# Application code (intentionally not part of the public showcase)
+# ---------------------------------------------------------------------------
 backend/
 frontend/
 
-# Notebooks and tests not intended for this branch
+# ---------------------------------------------------------------------------
+# Notebooks (training + evaluation not exposed publicly)
+# ---------------------------------------------------------------------------
 notebooks/
-tests/
-pytest.ini
+*.ipynb
 .ipynb_checkpoints/
 *.ipynb_checkpoints
 
-# Project-local/private folders
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+tests/
+pytest.ini
+
+# ---------------------------------------------------------------------------
+# Atlas templates (Harvard-Oxford and MNI; available via FSL directly)
+# ---------------------------------------------------------------------------
 atlas_data/
+
+# ---------------------------------------------------------------------------
+# Local development context, IDE files, AI assistant state
+# ---------------------------------------------------------------------------
 configs/
 .claude/
 CLAUDE.md
 claude.md
+DESIGN_BRIEF.md
+.cursor/
+.aider*
+.continue/
+.windsurf/
 
-# Python
+# ---------------------------------------------------------------------------
+# Python build / cache artifacts
+# ---------------------------------------------------------------------------
 __pycache__/
 *.py[cod]
 *$py.class
@@ -66,38 +89,72 @@ __pycache__/
 build/
 dist/
 .eggs/
+pip-wheel-metadata/
 
+# ---------------------------------------------------------------------------
 # Virtual environments
+# ---------------------------------------------------------------------------
 .venv/
 venv/
 env/
 ENV/
 
-# IDE
+# ---------------------------------------------------------------------------
+# IDE / editor metadata
+# ---------------------------------------------------------------------------
 .vscode/
 .idea/
 *.swp
+*.swo
+*~
+.project
+.pydevproject
 
-# OS
+# ---------------------------------------------------------------------------
+# Operating system files
+# ---------------------------------------------------------------------------
 .DS_Store
 Thumbs.db
 desktop.ini
+ehthumbs.db
 
-# Testing / coverage caches
+# ---------------------------------------------------------------------------
+# Test / coverage tools
+# ---------------------------------------------------------------------------
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 .coverage
+.coverage.*
 htmlcov/
 .tox/
+nosetests.xml
+coverage.xml
 
-# Environment files with secrets
+# ---------------------------------------------------------------------------
+# Environment files (secrets, API keys, machine-specific)
+# ---------------------------------------------------------------------------
 .env
-.env.local
+.env.*
 *.key
 *.pem
+secrets.json
 
-# Temporary
+# ---------------------------------------------------------------------------
+# Temporary files
+# ---------------------------------------------------------------------------
 tmp/
 temp/
 *.tmp
 *.bak
+*.log
 
+# ---------------------------------------------------------------------------
+# Node.js (in case any frontend artifacts leak through)
+# ---------------------------------------------------------------------------
+node_modules/
+.next/
+out/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
