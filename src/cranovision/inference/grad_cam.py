@@ -26,10 +26,43 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from scipy.ndimage import gaussian_filter
 
 from ..config import CLASS_NAMES, DEVICE, USE_AMP
 from ..data import get_val_transforms
 from .predict import make_inferer
+
+
+# -----------------------------------------------------------------------------
+# HEATMAP POST-PROCESSING — runs once at generation time so every consumer
+# (NIfTI overlay, 3D mesh, PDF figure) gets the cleaned volume.
+# -----------------------------------------------------------------------------
+
+def _clean_heatmap(
+    heatmap: np.ndarray,
+    brain_mask: np.ndarray,
+    sigma: float = 2.0,
+    threshold: float = 0.1,
+) -> np.ndarray:
+    """
+    Smooth the patch boundary, clip to brain, renormalize, and suppress noise.
+
+    The 128^3 Grad-CAM patch leaves a hard rectangular edge where it meets the
+    surrounding zeros, and produces spurious activations outside the brain.
+    Smoothing fades the box edge; the brain mask removes air-region signal;
+    the threshold cleans up faint background after renormalization.
+    """
+    # Soften the patch boundary so the rectangular edge blends into zeros.
+    smoothed = gaussian_filter(heatmap, sigma=sigma)
+    # Clip to brain — kills activations that landed in air.
+    smoothed = smoothed * brain_mask
+    # Renormalize after smoothing reduced the peak.
+    peak = smoothed.max()
+    if peak > 0:
+        smoothed = smoothed / peak
+    # Suppress faint background.
+    smoothed[smoothed < threshold] = 0.0
+    return smoothed.astype(np.float32)
 
 
 # -----------------------------------------------------------------------------
@@ -326,6 +359,12 @@ def compute_grad_cam(
     heatmaps_patch: Dict[int, torch.Tensor] = {}
     heatmaps_full: Dict[int, torch.Tensor] = {}
 
+    # Brain mask in full-volume coordinates. NormalizeIntensityd(nonzero=True)
+    # leaves background voxels at exactly 0 across all 4 channels, so any
+    # nonzero magnitude marks brain.
+    image_np = image.detach().cpu().numpy() if isinstance(image, torch.Tensor) else np.asarray(image)
+    brain_mask_full = (np.abs(image_np).sum(axis=0) > 0).astype(np.float32)
+
     with GradCAM3D(model, target_layer) as cam_engine:
         for cls in target_classes:
             if verbose:
@@ -337,13 +376,14 @@ def compute_grad_cam(
                 target_mask=mask,
             )
             heatmaps_patch[cls] = hm_patch
-            hm_full = torch.zeros(full_pred.shape, dtype=torch.float32)
-            hm_full[
+            hm_full_np = np.zeros(full_pred.shape, dtype=np.float32)
+            hm_full_np[
                 patch_offset[0]:patch_offset[0] + patch_size[0],
                 patch_offset[1]:patch_offset[1] + patch_size[1],
                 patch_offset[2]:patch_offset[2] + patch_size[2],
-            ] = hm_patch
-            heatmaps_full[cls] = hm_full
+            ] = hm_patch.numpy()
+            hm_full_np = _clean_heatmap(hm_full_np, brain_mask_full)
+            heatmaps_full[cls] = torch.from_numpy(hm_full_np)
 
     del img_batch
     if torch.cuda.is_available():
