@@ -27,9 +27,7 @@ The project addresses a real gap in clinical tooling. Commercial systems like Br
 
 ## Demo
 
-[![CranioVision demo preview](assets/demo-preview.gif)](assets/demo.mp4)
-
-[**Watch the full demo video →**](assets/demo.mp4)
+https://github.com/user-attachments/assets/5bd59055-36f9-4f7d-a35e-44a9899f52cf
 
 The demo walks through the full clinical workflow: drag-and-drop a BraTS case, watch the pipeline run all three models plus ensemble plus atlas analysis, explore the rotatable 3D brain mesh viewer, switch between model predictions, generate Grad-CAM explanations, and download the 5-page clinical PDF report.
 
