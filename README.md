@@ -19,7 +19,7 @@
 
 ---
 
-CranioVision is an end-to-end clinical platform that takes multi-modal brain MRI volumes (T1, T1c, T2, FLAIR) and produces **clinically interpretable** tumor segmentations from four independent prediction sources — three deep learning models plus a consensus ensemble — letting the radiologist choose which output to trust. Each prediction is paired with anatomical context (Harvard-Oxford atlas), eloquent cortex proximity analysis, model attention heatmaps via Grad-CAM, and per-region tumor volumes in cm³.
+CranioVision is an end-to-end clinical platform that takes multi-modal brain MRI volumes (T1, T1c, T2, FLAIR) and produces **clinically interpretable** tumor segmentations from four independent prediction sources, three deep learning models plus a consensus ensemble, letting the radiologist choose which output to trust. Each prediction is paired with anatomical context (Harvard-Oxford atlas), eloquent cortex proximity analysis, model attention heatmaps via Grad-CAM, and per-region tumor volumes in cm³.
 
 The project addresses a real gap in clinical tooling. Commercial systems like BrainLab and iPlan are prohibitively expensive. Open research prototypes such as DSNet and TumorPrism3D stop at single-model inference. CranioVision is the first accessible, open platform combining automated 3D tumor segmentation with multi-model second-opinion logic, atlas-based anatomical reasoning, surgical risk analysis, and Grad-CAM explainability in one deployable system.
 
