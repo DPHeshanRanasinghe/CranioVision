@@ -126,3 +126,9 @@ confirmed. If retraining is needed, that itself becomes a Phase 6 reproducibilit
 exercise worth documenting, but changes the paper timeline substantially.
 
 ---
+
+## 2026-08-20 — Research track pull request submission
+
+**Action:** Prepared formal pull request for the `docs/research` branch targeting `main`.
+**Details:** Includes Phase 0–1 research framing (`phase0_framing.md`), literature review (`related_work.md`), decision log (`PROJECT_NOTES.md`), research methodology guide (`DL_Research_Playbook.md`), and the reproducible RQ1 evaluation script (`gradcam_reliability.py`).
+
