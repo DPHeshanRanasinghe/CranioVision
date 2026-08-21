@@ -38,6 +38,7 @@ this cost once per patient.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import time
@@ -71,6 +72,36 @@ def _is_cached(case_id: str) -> bool:
         d / "metadata.json",          # registration parameters and timing
     ]
     return all(p.exists() for p in expected)
+
+
+def _hash_file(path: Union[str, Path], chunk_size: int = 1 << 20) -> str:
+    """SHA-256 hex digest of a file's contents, read in chunks."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(chunk_size), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _cache_source_matches(
+    metadata: Dict,
+    t1_path: Union[str, Path],
+    tumor_mask_path: Optional[Union[str, Path]],
+) -> bool:
+    """
+    Verify a cached registration was actually computed from the files being
+    requested now, not just files that happen to share a case_id.
+
+    case_id is derived from filename text (see case_parser.py), not file
+    content — two different uploads can collide on the same case_id if a
+    folder gets renamed/reused. Without this check, register_patient() would
+    silently hand back another patient's MNI transform.
+    """
+    if metadata.get("t1_hash") != _hash_file(t1_path):
+        return False
+    if tumor_mask_path is not None:
+        return metadata.get("tumor_mask_hash") == _hash_file(tumor_mask_path)
+    return metadata.get("tumor_mask_hash") is None
 
 
 def load_cached_registration(case_id: str) -> Optional[Dict]:
@@ -157,7 +188,11 @@ def register_patient(
     tumor_mask_path: optional path to a tumor mask NIfTI for cost-function masking.
                      Voxels where mask > 0 are excluded from similarity computation.
                      We recommend passing the WHOLE TUMOR mask (label > 0).
-    use_cache      : if True (default), reuse cached result if available
+    use_cache      : if True (default), reuse cached result if available AND
+                     its stored SHA-256 hash of t1_path/tumor_mask_path still
+                     matches the files on disk now — case_id is derived from
+                     filename text, not content, so a mismatch (different
+                     files reusing the same case_id) forces re-registration
     transform_type : ANTs transform type. "SyN" = affine + non-linear (recommended).
                      Use "Affine" for faster but cruder registration during dev.
     verbose        : print progress
@@ -175,9 +210,18 @@ def register_patient(
     """
     # --- Try cache --------------------------------------------------------
     if use_cache and _is_cached(case_id):
+        cached = load_cached_registration(case_id)
+        if cached is not None and _cache_source_matches(
+            cached["metadata"], t1_path, tumor_mask_path
+        ):
+            if verbose:
+                print(f"[cache] Using cached registration for {case_id}")
+            return cached
         if verbose:
-            print(f"[cache] Using cached registration for {case_id}")
-        return load_cached_registration(case_id)
+            print(
+                f"[cache] {case_id} is cached but source files differ from "
+                f"what's on disk now — re-registering"
+            )
 
     # --- Load images ------------------------------------------------------
     if verbose:
@@ -301,7 +345,9 @@ def register_patient(
         "case_id": case_id,
         "transform_type": transform_type,
         "t1_path": str(t1_path),
+        "t1_hash": _hash_file(t1_path),
         "tumor_mask_path": str(tumor_mask_path) if tumor_mask_path else None,
+        "tumor_mask_hash": _hash_file(tumor_mask_path) if tumor_mask_path else None,
         "elapsed_seconds": round(elapsed, 1),
         "atlas_used": "MNI152NLin2009cAsym 1mm brain",
         "registration_mask_used": tumor_mask is not None,
