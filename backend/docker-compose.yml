@@ -1,0 +1,38 @@
+# CranioVision — demo result cache.
+#
+#   docker compose up -d          start (cache survives restarts)
+#   docker compose down           stop, KEEP the warmed cache
+#   docker compose down -v        stop and DESTROY the cache volume
+#
+# The volume is deliberate: a warmed cache is ~15 min of GPU/CPU time, and
+# losing it to an accidental restart on finals morning would be painful.
+# `down -v`, or POST /cache/flush, clears it on demand.
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: craniovision-cache
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory 2gb
+      --maxmemory-policy noeviction
+      --save 60 1
+    volumes:
+      - cache-data:/data
+    healthcheck:
+      # `redis-cli ping` returns PONG once the server is actually accepting
+      # commands — container "running" alone does not mean ready.
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 3s
+
+volumes:
+  cache-data:
+    name: craniovision-cache-data
