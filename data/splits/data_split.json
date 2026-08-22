@@ -1,0 +1,19 @@
+{
+  "seed": 42,
+  "train": [
+    "BraTS-GLI-02063-101",
+    "BraTS-GLI-02062-103",
+    "BraTS-GLI-02062-102",
+    "BraTS-GLI-02063-102",
+    "BraTS-GLI-02062-105",
+    "BraTS-GLI-02063-100",
+    "BraTS-GLI-02063-103"
+  ],
+  "val": [
+    "BraTS-GLI-02062-104"
+  ],
+  "test": [
+    "BraTS-GLI-02062-100",
+    "BraTS-GLI-02062-101"
+  ]
+}
