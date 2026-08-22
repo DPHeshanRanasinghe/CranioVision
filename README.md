@@ -13,7 +13,7 @@
 [![BraTS 2024](https://img.shields.io/badge/Dataset-BraTS%202024-blueviolet)](https://www.synapse.org/brats2024)
 [![Status](https://img.shields.io/badge/Status-Phase%204%20Complete-success)]()
 
-[Demo](#demo) · [Capabilities](#core-capabilities) · [Results](#final-results) · [Architecture](#architecture) · [Design Decisions](#design-decisions)
+[Demo](#demo) · [**Setup & Run**](#running-the-system) · [Capabilities](#core-capabilities) · [Results](#final-results) · [Architecture](#architecture) · [Design Decisions](#design-decisions)
 
 </div>
 
@@ -37,50 +37,118 @@ The demo walks through the full clinical workflow: drag-and-drop a BraTS case, w
 
 ## Running the System
 
-> **Note on this repository.** `backend/` and `frontend/` are intentionally not
-> tracked here (see `.gitignore`) — this repo is a public showcase of the ML
-> pipeline (`src/cranovision/`), not the full working tree. The steps below
-> assume you have the complete tree locally.
+> **You are on `develop`.** This branch carries the complete runnable tree —
+> `src/` (ML pipeline), `backend/` (FastAPI), `frontend/` (Next.js), `tests/`.
+> `main` is a public showcase of the ML pipeline only and will not run as a
+> system. Clone `develop` if you want to bring CranioVision up.
+
+```bash
+git clone -b develop https://github.com/DPHeshanRanasinghe/CranioVision.git
+cd CranioVision
+```
+
+### What is *not* in the repository
+
+Three things the system needs cannot be committed. Get them before you start —
+each one fails only at the point of use, not at startup, so a missing asset
+looks like a broken feature rather than a missing file.
+
+| Asset | Path | How to get it | Size |
+|---|---|---|---|
+| Model checkpoints | `models/` | Not public — request from the maintainers, or train your own (see `src/cranovision/training/`) | ~455 MB |
+| BraTS 2024 cases | `data/raw/BraTS2024_small_dataset/<CASE_ID>/` | [BraTS 2024 on Synapse](https://www.synapse.org/brats2024) — registration and a data-use agreement are required | ~250 MB/case |
+| Atlas templates | `atlas_data/` | `python -m src.cranovision.atlas.download` | ~4 MB |
+
+`models/` must contain exactly these three files, named exactly:
+
+```
+models/attention_unet_best.pth
+models/swin_unetr_best.pth
+models/nnunet_best.pth
+```
+
+Each BraTS case folder must contain the four modalities, and optionally the
+ground-truth segmentation — supply `-seg` and the UI additionally reports Dice
+against it:
+
+```
+data/raw/BraTS2024_small_dataset/BraTS-GLI-02062-100/
+├── BraTS-GLI-02062-100-t1n.nii     required
+├── BraTS-GLI-02062-100-t1c.nii     required
+├── BraTS-GLI-02062-100-t2w.nii     required
+├── BraTS-GLI-02062-100-t2f.nii     required
+└── BraTS-GLI-02062-100-seg.nii     optional — enables "Dice vs GT"
+```
+
+Anything you drop in there is picked up automatically: `GET /demo-cases` scans
+the folder, so the dropdown in the UI needs no configuration.
 
 ### Prerequisites
 
-- Python 3.11, Node 18+, Docker Desktop
-- Trained checkpoints in `models/` — `attention_unet_best.pth`,
-  `swin_unetr_best.pth`, `nnunet_best.pth`
-- BraTS cases in `data/raw/BraTS2024_small_dataset/<CASE_ID>/`
-- Atlas templates in `atlas_data/` (`python -m src.cranovision.atlas.download`)
+- **Python 3.11**
+- **Node 18+**
+- **Docker Desktop** — only for the result cache; the system runs without it,
+  just slowly
+- A CUDA GPU is optional. Everything runs on CPU; a full analysis is ~9 minutes
+  on CPU versus ~2 minutes on a 4 GB GPU.
 
 ### First-time setup — from the repo root
 
 ```bash
 python -m venv .venv
-.venv/Scripts/pip install -r requirements.txt      # Linux/macOS: .venv/bin/pip
-cd frontend && npm install && cd ..
+.venv/Scripts/pip install -r requirements.txt
+.venv/Scripts/pip install -r backend/requirements.txt
+.venv/Scripts/python -m src.cranovision.atlas.download
+cd frontend && npm ci && cd ..
 ```
 
-`requirements.txt` includes `antspyx` (atlas registration), `reportlab` (PDF
-reports) and `redis` (demo cache). Missing any of these fails only at the
-point of use, not at startup.
+On Linux/macOS the venv binaries live in `.venv/bin/` rather than
+`.venv/Scripts/`.
+
+Two dependencies are easy to miss and produce confusing failures if absent:
+`antspyx` (atlas registration — without it you get predictions but no
+anatomical labelling and no tumour meshes) and `reportlab` (PDF reports —
+without it `POST /jobs/{id}/report` fails). Both are in `requirements.txt`;
+`redis` is in `backend/requirements.txt`.
+
+Check the install found your data and device:
+
+```bash
+.venv/Scripts/python -m src.cranovision.config
+```
 
 ### Start it up — three terminals
 
 ```bash
-# 1. result cache (see backend/DEMO_CACHE.md)
 cd backend && docker compose up -d
-docker compose ps                 # wait for STATUS = healthy
+docker compose ps
+```
 
-# 2. backend — start AFTER Redis so it connects on boot
-cd backend && uvicorn main:app --reload --port 8000
+```bash
+cd backend
+uvicorn main:app --reload --reload-dir . --reload-dir ../src --port 8000
+```
 
-# 3. frontend
+```bash
 cd frontend && npm run dev
 ```
 
-Open <http://localhost:3000>. Verify the backend found the cache:
+Start Redis first so the backend connects to it on boot, and wait for
+`docker compose ps` to report **healthy** before starting the backend.
+
+Open <http://localhost:3000>. Confirm the backend found everything:
 
 ```bash
-curl http://localhost:8000/cache/status      # {"enabled":true,"reachable":true,...}
+curl http://localhost:8000/cache/status
+curl http://localhost:8000/demo-cases
 ```
+
+The first should report `"reachable": true`, the second should list your case
+folders.
+
+`--reload-dir ../src` is not optional if you intend to edit the pipeline:
+uvicorn watches only its own directory by default, so changes under `src/`
+silently have no effect.
 
 ### Warm the cache before a demo
 
@@ -89,14 +157,14 @@ demo case once, ahead of time:
 
 ```bash
 cd backend
-python scripts/warm_demo_cache.py                 # all demo cases
-python scripts/warm_demo_cache.py --cases BraTS-GLI-02062-105
-python scripts/warm_demo_cache.py --force         # re-warm from scratch
+python scripts/warm_demo_cache.py
 ```
 
+`--cases <CASE_ID>` warms one case; `--force` re-warms from scratch.
+
 Warm through this script rather than by clicking in the UI: it runs analysis →
-Grad-CAM → report in that order, so a case is fully warm. A case warmed without
-Grad-CAM pays ~150 s the first time someone clicks XAI or Report.
+Grad-CAM → report in that order, so a case comes out fully warm. A case warmed
+without Grad-CAM pays ~150 s the first time someone clicks XAI or Report.
 
 ### Cache management
 
@@ -118,18 +186,58 @@ serving the previous patient's result.
 **Flush after changing report or pipeline code** — otherwise you will be served
 the PDF generated by the old code.
 
+### Running the tests
+
+```bash
+.venv/Scripts/python -m pytest tests/ -v
+```
+
+The inference tests need the checkpoints present.
+
 ### Troubleshooting
 
 | Symptom | Cause | Fix |
 |---|---|---|
+| `RuntimeError: No model checkpoints found` | `models/` empty | Place the three `.pth` files there, named exactly as above |
+| `/demo-cases` returns an empty list | No case folders, or modality files misnamed | Each case folder needs all four `-t1n/-t1c/-t2w/-t2f` volumes |
+| `ModuleNotFoundError: ants` / `reportlab` / `redis` | Deps not installed, or only the root requirements were | Re-run both `pip install -r` lines |
+| Predictions appear but no anatomy and no 3D tumour | `antspyx` missing, or `atlas_data/` empty | Install `antspyx`; run the atlas download module |
 | Report button fails, `OPTIONS ... 400` in the log | Frontend on a port the backend does not allow | Any `localhost` port is accepted now; check nothing else occupies 3000 so you know which port you are on |
-| Every run takes ~9 min | Redis unreachable, or case not warmed | `curl /cache/status`; look for `[demo-cache]` lines in the backend log |
+| Every run takes ~9 min | Redis unreachable, or case not warmed | Check `/cache/status`; look for `[demo-cache]` lines in the backend log |
 | `cache/status` shows `count: 0` after warming | Backend was started before Redis | Restart the backend |
-| `RuntimeError: No model checkpoints found` | `models/` empty | Place the three `.pth` files there |
-| `ModuleNotFoundError: ants` / `reportlab` | Deps installed before they were added | Re-run `pip install -r requirements.txt` |
 | Job disappears mid-run | `--reload` restarted the server on a file save | Do not edit backend source while a job is running |
 | Code changes to `src/cranovision/` have no effect | `--reload` only watches its own directory by default | Start with `--reload-dir . --reload-dir ../src`, or restart the backend |
-| Changes still have no effect after restarting | An **orphaned uvicorn worker** is still holding port 8000 and answering requests | `netstat -ano \| findstr :8000` — if more than one PID is LISTENING, `taskkill /PID <pid> /T /F` each, confirm the port is free, then start one server |
+| Changes still have no effect after restarting | An **orphaned uvicorn worker** is still holding port 8000 and answering requests | List the PIDs listening on 8000; if more than one, kill each and confirm the port is free before starting one server |
+
+---
+
+## Repository layout
+
+```
+CranioVision/
+├── src/cranovision/     ML pipeline — the part `main` also publishes
+│   ├── config.py        Single source of truth: paths, labels, device
+│   ├── data/            BraTS scanning/splitting + MONAI transforms
+│   ├── models/          Attention U-Net, SwinUNETR, DynUNet factories
+│   ├── training/        Train loop and metrics
+│   ├── inference/       Prediction, ensemble, Grad-CAM, MC-dropout
+│   ├── atlas/           ANTs to MNI152, Harvard-Oxford, eloquent cortex
+│   ├── reporting/       Clinical PDF generation
+│   ├── analysis/        Research measurement scripts (not in the product path)
+│   └── pipeline.py      The orchestrator everything else hangs off
+├── backend/             FastAPI server + Redis demo cache  -> backend/README.md
+├── frontend/            Next.js dashboard                  -> frontend/README.md
+├── research/            Validation study, evidence review, decision log
+├── tests/               Pytest suite
+├── data/  models/  atlas_data/  outputs/    (untracked — see above)
+```
+
+Two design rules in `pipeline.py` are easy to break by accident and worth
+knowing before you edit it: Grad-CAM is **always** computed with Attention
+U-Net regardless of which prediction is being explained (it is the only one of
+the three that produces reliable heatmaps), and atlas analysis is run **per
+model**, so each model's anatomical result reflects that model's own prediction
+rather than a shared one.
 
 ---
 
