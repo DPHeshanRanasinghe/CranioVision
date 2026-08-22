@@ -193,6 +193,140 @@ def _draw_table(canvas: Canvas, data: List[List[str]],
     return y_top - h
 
 
+def _draw_status_banner(canvas: Canvas, y: float) -> float:
+    """
+    Prominent status strip. Previously this only appeared as small footer text,
+    which is easy to miss on a printed page — and the single most important
+    thing a reader must know is that this is machine-generated and unreviewed.
+    """
+    h = 8.5 * mm
+    canvas.setFillColor(colors.HexColor("#FFF4E5"))
+    canvas.setStrokeColor(colors.HexColor("#B45309"))
+    canvas.setLineWidth(0.7)
+    canvas.roundRect(MARGIN_LEFT, y - h, CONTENT_W, h, 2, fill=1, stroke=1)
+    canvas.setFillColor(colors.HexColor("#8A4B08"))
+    canvas.setFont("Helvetica-Bold", 8.5)
+    canvas.drawString(MARGIN_LEFT + 3 * mm, y - h + 5.2 * mm,
+                      "AI-GENERATED DECISION SUPPORT — RESEARCH USE ONLY")
+    canvas.setFont("Helvetica", 8)
+    canvas.drawString(MARGIN_LEFT + 3 * mm, y - h + 1.9 * mm,
+                      "Not a diagnostic report. All findings require verification "
+                      "by a qualified clinician before any clinical use.")
+    return y - h - 3 * mm
+
+
+def _clinical_header_block(canvas: Canvas, y: float, case_id: str,
+                           study_meta: Optional[Dict] = None) -> float:
+    """
+    Indication / technique / comparison — three of the eight components the ACR
+    practice parameter requires and which this report previously omitted
+    entirely. Where the caller supplies nothing we print "Not provided" rather
+    than hiding the field: the omission is itself information for the reader.
+    """
+    m = study_meta or {}
+    rows = [
+        ["Case ID", case_id, "Study date", m.get("study_date", "Not provided")],
+        ["Indication", m.get("indication", "Not provided"),
+         "Comparison", m.get("comparison", "None available")],
+        ["Technique", m.get("technique",
+                            "Multiparametric MRI (T1, T1c, T2, FLAIR), BraTS-preprocessed. "
+                            "Acquisition parameters not supplied."),
+         "", ""],
+    ]
+    cw = [2.6 * cm, CONTENT_W / 2 - 2.6 * cm + 1.4 * cm,
+          2.4 * cm, CONTENT_W / 2 - 2.4 * cm - 1.4 * cm]
+    table = Table(rows, colWidths=cw)
+    table.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("TEXTCOLOR", (0, 0), (-1, -1), TEXT_COLOR),
+        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+        ("FONTNAME", (2, 0), (2, -1), "Helvetica-Bold"),
+        ("TEXTCOLOR", (0, 0), (0, -1), PRIMARY_COLOR),
+        ("TEXTCOLOR", (2, 0), (2, -1), PRIMARY_COLOR),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+        ("SPAN", (1, 2), (3, 2)),
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F7F9FB")),
+        ("BOX", (0, 0), (-1, -1), 0.4, RULE_COLOR),
+    ]))
+    w, h = table.wrap(CONTENT_W, PAGE_H)
+    table.drawOn(canvas, MARGIN_LEFT, y - h)
+    return y - h - 4 * mm
+
+
+def _build_impression(analysis: Dict, prediction_name: str,
+                      display_name: str) -> List[str]:
+    """
+    Synthesise the Impression — the section referring clinicians read first,
+    and sometimes the only one they read. The report previously had none.
+
+    Deliberately written as findings + required next steps, never as a
+    diagnosis, and it never states a RANO response category: that requires a
+    prior study, which a single-timepoint analysis does not have.
+    """
+    metrics = analysis.get("per_model_metrics", {}).get(prediction_name, {})
+    vols = metrics.get("volumes_cm3", {})
+    atlas = analysis.get("atlas", {}).get(prediction_name, {})
+    atlas = atlas if isinstance(atlas, dict) else {}
+    anatomy = atlas.get("anatomy", {}) or {}
+    eloquent = atlas.get("eloquent", {}) or {}
+    agree = analysis.get("agreement", {})
+
+    total = vols.get("Total tumor", 0)
+    enh = vols.get("Enhancing tumor", 0)
+    nec = vols.get("Necrotic core", 0)
+    edema = vols.get("Edema", 0)
+    core = enh + nec
+
+    lines = []
+
+    side = str(anatomy.get("lateralization", "")).lower()
+    region = anatomy.get("primary_region", "unspecified region")
+    where = f"{side} hemisphere, {region}" if side else region
+    lines.append(
+        f"1. Segmentation identifies a lesion in the <b>{where}</b>, with a "
+        f"contrast-enhancing plus necrotic core of <b>{core:.1f} cm³</b> "
+        f"and surrounding non-enhancing / oedematous signal of "
+        f"<b>{edema:.1f} cm³</b> (combined {total:.1f} cm³)."
+    )
+
+    high = [k for k, v in eloquent.items() if v.get("risk_level") == "high"]
+    if high:
+        names = ", ".join(sorted(high)[:3])
+        more = f" and {len(high) - 3} other region(s)" if len(high) > 3 else ""
+        lines.append(
+            f"2. Atlas-based proximity indicates the lesion abuts or lies within "
+            f"5 mm of <b>{names}{more}</b>. Functional confirmation with fMRI "
+            f"and DTI tractography is required before surgical planning."
+        )
+    else:
+        lines.append(
+            "2. No eloquent cortical region was flagged as involved or within "
+            "5 mm on atlas-based proximity analysis."
+        )
+
+    ta = agree.get("tumor_region_agreement", 0) * 100
+    if ta >= 85:
+        c = "high inter-model consensus; boundary delineation is stable"
+    elif ta >= 70:
+        c = "moderate inter-model consensus; boundaries warrant review"
+    else:
+        c = "low inter-model consensus; boundaries require careful review"
+    lines.append(
+        f"3. Three architectures agree on <b>{ta:.0f}%</b> of tumour-region "
+        f"voxels — {c}. Disagreement concentrates at margins."
+    )
+
+    lines.append(
+        "4. Volumetric figures are automated estimates and carry a measured "
+        "mean relative error of approximately 7%. Response assessment "
+        "(RANO 2.0) is <b>not</b> attempted: no prior study was supplied."
+    )
+    return lines
+
+
 def _draw_risk_badge(canvas: Canvas, x: float, y: float, text: str,
                      risk_level: str, width: float = 50, height: float = 14):
     """Draw a colored risk badge (red HIGH / orange MOD / etc.)."""
@@ -219,11 +353,10 @@ def _draw_footer(canvas: Canvas, page_num: int, total_pages: int, case_id: str):
 
     text_y = rule_y - 4 * mm
 
-    # Left: app name + disclaimer
-    canvas.drawString(
-        MARGIN_LEFT, text_y,
-        "CranioVision  |  Research use only — not for clinical diagnosis"
-    )
+    # Left: disclaimer. Shortened because the full sentence ran under the
+    # centred case id on every page.
+    canvas.drawString(MARGIN_LEFT, text_y,
+                      "CranioVision  |  Research use only")
     # Center: case ID
     case_label = f"Case: {case_id}"
     case_w = canvas.stringWidth(case_label, "Helvetica", 8)
@@ -252,6 +385,72 @@ def _draw_page_header(canvas: Canvas, styles: Dict, title: str, subtitle: str):
 # PAGE 1 — CLINICAL SUMMARY
 # -----------------------------------------------------------------------------
 
+def _build_recommendations(analysis: Dict, prediction_name: str) -> List[str]:
+    """Actionable next steps. Never a treatment decision — only what the
+    analysis itself implies is needed to make one safely."""
+    atlas = analysis.get("atlas", {}).get(prediction_name, {})
+    atlas = atlas if isinstance(atlas, dict) else {}
+    eloquent = atlas.get("eloquent", {}) or {}
+    agree = analysis.get("agreement", {})
+    ta = agree.get("tumor_region_agreement", 0) * 100
+
+    recs = ["1. All segmentations and volumes require verification by a "
+            "qualified radiologist before use in any clinical decision."]
+    if [k for k, v in eloquent.items() if v.get("risk_level") == "high"]:
+        recs.append("2. Pre-operative fMRI and DTI tractography are strongly "
+                    "recommended: atlas-based proximity is a population "
+                    "approximation and does not reflect this patient's "
+                    "functional anatomy.")
+    else:
+        recs.append("2. No eloquent-cortex proximity flagged; functional "
+                    "imaging remains at the discretion of the surgical team.")
+    if ta < 85:
+        recs.append("3. Inter-model disagreement is concentrated at tumour "
+                    "margins — review boundary delineation before using these "
+                    "volumes for treatment planning or response measurement.")
+    else:
+        recs.append("3. Inter-model consensus is high; boundaries are stable "
+                    "across architectures.")
+    recs.append("4. For response assessment, repeat imaging and compare "
+                "against a baseline study using RANO 2.0 criteria. This "
+                "single-timepoint analysis cannot establish response.")
+    return recs
+
+
+def _draw_authentication(canvas: Canvas, styles: Dict, y: float,
+                         analysis: Dict) -> float:
+    """Version traceability + clinician sign-off line."""
+    try:
+        from ..config import MODALITIES  # noqa: F401
+    except Exception:
+        pass
+    models = ", ".join(analysis.get("available_models", [])) or "n/a"
+    rows = [
+        ["Produced by", "CranioVision research prototype (unversioned build)"],
+        ["Models", models],
+        ["Atlas", "MNI152NLin2009cAsym 1mm + Harvard-Oxford (thr25)"],
+        ["Evidence base", "BraTS 2024 adult glioma. Not validated on "
+                          "prospective clinical data."],
+        ["Reviewed by", "_____________________________     Date: ____________"],
+    ]
+    table = Table(rows, colWidths=[3.2 * cm, CONTENT_W - 3.2 * cm])
+    table.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
+        ("FONTSIZE", (0, 0), (-1, -1), 7.5),
+        ("TEXTCOLOR", (0, 0), (-1, -1), MUTED_COLOR),
+        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+        ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
+        ("TEXTCOLOR", (0, -1), (-1, -1), TEXT_COLOR),
+        ("TOPPADDING", (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+        ("LINEABOVE", (0, 0), (-1, 0), 0.4, RULE_COLOR),
+        ("LINEABOVE", (0, -1), (-1, -1), 0.4, RULE_COLOR),
+    ]))
+    w, h = table.wrap(CONTENT_W, PAGE_H)
+    table.drawOn(canvas, MARGIN_LEFT, y - h)
+    return y - h
+
+
 def _page_1_clinical_summary(canvas: Canvas, styles: Dict, *,
                               case_id: str,
                               analysis: Dict,
@@ -266,6 +465,17 @@ def _page_1_clinical_summary(canvas: Canvas, styles: Dict, *,
         f"Generated {timestamp}  |  Featured prediction: {display_name}",
     )
 
+    y = _draw_status_banner(canvas, y)
+    y = _clinical_header_block(canvas, y, case_id, analysis.get("study_meta"))
+
+    # IMPRESSION — first, because it is what gets read first.
+    p = Paragraph("Impression", styles["h1"])
+    y = _draw_paragraph(canvas, p, MARGIN_LEFT, y, CONTENT_W)
+    for line in _build_impression(analysis, prediction_name, display_name):
+        para = Paragraph(line, styles["body"])
+        y = _draw_paragraph(canvas, para, MARGIN_LEFT, y, CONTENT_W) - 1.6 * mm
+    y -= 2 * mm
+
     # Hero figure: 3-view of chosen prediction
     pred = analysis["predictions"][prediction_name]
     image = _get_image_from_analysis(analysis)
@@ -278,7 +488,7 @@ def _page_1_clinical_summary(canvas: Canvas, styles: Dict, *,
         y -= 2.5 * cm
     else:
         buf = render_hero_segmentation(image, pred)
-        y = _draw_image_centered(canvas, buf, y, CONTENT_W, 8 * cm) - 4 * mm
+        y = _draw_image_centered(canvas, buf, y, CONTENT_W, 5.6 * cm) - 3 * mm
 
     # Caption
     caption = Paragraph(
@@ -299,12 +509,26 @@ def _page_1_clinical_summary(canvas: Canvas, styles: Dict, *,
     anatomy = atlas.get("anatomy", {}) if isinstance(atlas, dict) else {}
     eloquent = atlas.get("eloquent", {}) if isinstance(atlas, dict) else {}
 
+    # Volumes carry a measured ~7.4% mean relative error, so quoting 4
+    # significant figures implies precision the method does not have.
+    def _v(key):
+        val = volumes.get(key, 0)
+        return f"{val:.1f} cm³  (±{val * 0.074:.1f})"
+
+    enh_v = volumes.get("Enhancing tumor", 0)
+    nec_v = volumes.get("Necrotic core", 0)
+
     findings_rows = [
         ["Field", "Value"],
-        ["Total tumor volume", f"{volumes.get('Total tumor', 0):.2f} cm³"],
-        ["Edema volume",       f"{volumes.get('Edema', 0):.2f} cm³"],
-        ["Enhancing tumor volume", f"{volumes.get('Enhancing tumor', 0):.2f} cm³"],
-        ["Necrotic core volume",   f"{volumes.get('Necrotic core', 0):.2f} cm³"],
+        # RANO 2.0 excludes T2/FLAIR from enhancing-tumour assessment, so the
+        # core is listed first: leading with "total" (89% oedema here) invites
+        # reading oedema as tumour burden.
+        ["Enhancing + necrotic core",
+         f"{enh_v + nec_v:.1f} cm³  (±{(enh_v + nec_v) * 0.074:.1f})"],
+        ["  — Enhancing tumor", _v("Enhancing tumor")],
+        ["  — Necrotic core", _v("Necrotic core")],
+        ["Non-enhancing / edema", _v("Edema")],
+        ["Combined segmented volume", _v("Total tumor")],
     ]
 
     if anatomy:
@@ -328,32 +552,83 @@ def _page_1_clinical_summary(canvas: Canvas, styles: Dict, *,
             findings_rows.append(["Eloquent cortex risk",
                                   "Low / no involvement detected"])
 
-    # Confidence verdict — driven by tumor-region agreement, not whole-volume
+    # Inter-model consensus — driven by tumor-region agreement, not whole-volume
     # (whole-volume is dominated by background and is always near-unanimous).
-    # We never report "LOWER CONFIDENCE": ensemble Dice is already strong by
-    # construction, so the ceiling on this verdict is moderate-with-review.
+    #
+    # This deliberately describes CONSENSUS, not confidence or accuracy. The
+    # two are not the same: agreement measures whether the architectures made
+    # the same call, not whether that call is correct — three models can agree
+    # and all be wrong. A pilot study (research/VALIDATION_REPORT.md) found
+    # agreement does correlate with Dice (Spearman rho=+0.77, p=0.009, n=10),
+    # but the effect was not separable from tumor volume at that sample size,
+    # and no agreement band yet has enough cases to quote an expected Dice.
+    # Until the adequately-powered study lands, this must not imply accuracy.
     agreement = analysis.get("agreement", {})
     unanimous = agreement.get("unanimous_fraction", 0) * 100
     tumor_agreement = agreement.get("tumor_region_agreement", 0) * 100
     if tumor_agreement >= 85:
-        verdict = "High confidence."
+        verdict = "High inter-model consensus; disagreement is limited."
     elif tumor_agreement >= 70:
-        verdict = "Moderate confidence; review boundaries."
+        verdict = "Moderate consensus; review tumor boundaries."
     else:
-        verdict = "Moderate confidence; review recommended."
+        verdict = "Low consensus; careful boundary review recommended."
     findings_rows.append(["Multi-model agreement",
-                          f"Tumor-region: {tumor_agreement:.1f}%; "
-                          f"whole-volume: {unanimous:.1f}%. {verdict}"])
+                          f"Tumor-region {tumor_agreement:.1f}% / whole-volume "
+                          f"{unanimous:.1f}% — {verdict.lower()}"])
 
     y -= 4 * mm
     y = _draw_table(canvas, findings_rows,
                     col_widths=[5.5 * cm, CONTENT_W - 5.5 * cm],
                     y_top=y)
 
+    # Recommendations and authentication live on the final page: page 1 is
+    # already at capacity with the impression, hero figure and findings, and a
+    # sign-off block belongs at the end of a clinical document anyway.
+
 
 # -----------------------------------------------------------------------------
 # PAGE 2 — MULTI-MODEL COMPARISON
 # -----------------------------------------------------------------------------
+
+def _page_final_recommendations(canvas: Canvas, styles: Dict, *,
+                                case_id: str, analysis: Dict,
+                                prediction_name: str) -> None:
+    """Recommendations + authentication. Closes out the document."""
+    y = _draw_page_header(
+        canvas, styles,
+        "Recommendations & Verification",
+        "Required actions and reviewing-clinician sign-off.",
+    )
+
+    p = Paragraph("Recommendations", styles["h1"])
+    y = _draw_paragraph(canvas, p, MARGIN_LEFT, y, CONTENT_W) - 1 * mm
+    for rec in _build_recommendations(analysis, prediction_name):
+        y = _draw_paragraph(canvas, Paragraph(rec, styles["body"]),
+                            MARGIN_LEFT, y, CONTENT_W) - 2.2 * mm
+
+    y -= 4 * mm
+    p = Paragraph("Limitations", styles["h1"])
+    y = _draw_paragraph(canvas, p, MARGIN_LEFT, y, CONTENT_W) - 1 * mm
+    for lim in [
+        "Evidence base is the BraTS 2024 adult glioma dataset. Performance on "
+        "other tumour types, paediatric cases, post-operative studies or "
+        "non-BraTS acquisition protocols is unknown.",
+        "Anatomical localisation is atlas-based: the patient's brain is warped "
+        "to a population template, so region attribution is approximate and "
+        "degrades with large mass effect.",
+        "Eloquent-cortex distances are population estimates, not this "
+        "patient's functional anatomy.",
+        "This software has no FDA, CE or NMRA clearance and is not a "
+        "registered medical device.",
+    ]:
+        y = _draw_paragraph(canvas, Paragraph("• " + lim, styles["body"]),
+                            MARGIN_LEFT, y, CONTENT_W) - 2 * mm
+
+    y -= 4 * mm
+    p = Paragraph("Verification", styles["h1"])
+    y = _draw_paragraph(canvas, p, MARGIN_LEFT, y, CONTENT_W) - 1 * mm
+    _draw_authentication(canvas, styles, y, analysis)
+
 
 def _page_2_model_comparison(canvas: Canvas, styles: Dict, *,
                               analysis: Dict,
@@ -426,7 +701,21 @@ def _page_2_model_comparison(canvas: Canvas, styles: Dict, *,
     other_w = (CONTENT_W - metric_w) / (n_cols - 1)
     col_widths = [metric_w] + [other_w] * (n_cols - 1)
 
-    y = _draw_table(canvas, rows, col_widths, y) - 4 * mm
+    y = _draw_table(canvas, rows, col_widths, y) - 2 * mm
+
+    if has_dice:
+        # Dice only exists because a reference mask was supplied with this
+        # case. It is a research agreement metric against that reference, NOT
+        # a confidence score for this patient — and it is unavailable for a
+        # routine clinical study, where no reference mask exists.
+        note = Paragraph(
+            "Dice values compare each prediction against the reference "
+            "segmentation supplied with this case. They are a research "
+            "agreement metric, not a confidence score for this patient, and "
+            "are unavailable for studies without a reference mask.",
+            styles["caption"],
+        )
+        y = _draw_paragraph(canvas, note, MARGIN_LEFT, y, CONTENT_W) - 2 * mm
 
     # Side-by-side thumbnails
     image = _get_image_from_analysis(analysis)
@@ -604,13 +893,19 @@ def _page_4_xai(canvas: Canvas, styles: Dict, *,
     # Caption explaining the architectural choice
     explainer = xai.get("explainer_model", "attention_unet")
     being_explained = xai.get("prediction_being_explained", prediction_name)
+    # NOTE: this caption previously asserted a "9-15x signal-to-background
+    # ratio" for the Attention U-Net explainer. That figure has no reproducible
+    # computation in this repository (see research/PROJECT_NOTES.md), so it must
+    # not be stated to a clinician. The architectural choice is described as
+    # what it is — an empirical development observation, not a measured result.
     cap = Paragraph(
-        f"Grad-CAM heatmaps generated using <b>Attention U-Net</b> as a "
-        f"surrogate explainer (validated empirically against alternatives — "
-        f"9-15× signal-to-background ratio vs unreliable heatmaps from "
-        f"SwinUNETR / nnU-Net). Warm regions indicate feature importance at "
-        f"a generic CNN level and should be interpreted qualitatively. They "
-        f"may not exactly match the internal decision process of the "
+        f"Grad-CAM heatmaps generated using <b>Attention U-Net</b> as a shared "
+        f"surrogate explainer. It was selected during development because it "
+        f"produced the most stable heatmaps of the three architectures; that "
+        f"comparison has not yet been quantified, so this page is an "
+        f"inspection aid only. Warm regions indicate feature importance at a "
+        f"generic CNN level and should be interpreted qualitatively. They may "
+        f"not match the internal decision process of the "
         f"<b>{being_explained}</b> prediction shown above.",
         styles["caption"],
     )
@@ -722,7 +1017,7 @@ def generate_clinical_report(
     canvas.setAuthor("CranioVision")
     canvas.setSubject("Brain tumor segmentation and clinical analysis")
 
-    total_pages = 5
+    total_pages = 6
 
     # Page 1 — clinical summary
     _page_1_clinical_summary(
@@ -773,6 +1068,16 @@ def generate_clinical_report(
         display_name=display_names.get(prediction_to_feature, prediction_to_feature),
     )
     _draw_footer(canvas, 5, total_pages, case_id)
+    canvas.showPage()
+
+    # Page 6 — recommendations, limitations, sign-off
+    _page_final_recommendations(
+        canvas, styles,
+        case_id=case_id,
+        analysis=analysis_result,
+        prediction_name=prediction_to_feature,
+    )
+    _draw_footer(canvas, 6, total_pages, case_id)
     canvas.showPage()
 
     canvas.save()

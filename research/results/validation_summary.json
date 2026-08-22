@@ -1,0 +1,62 @@
+{
+  "n_cases": 3,
+  "cases": [
+    "BraTS-GLI-02063-100",
+    "BraTS-GLI-02063-101",
+    "BraTS-GLI-02063-102"
+  ],
+  "device": "cpu",
+  "models": [
+    "attention_unet",
+    "swin_unetr",
+    "nnunet"
+  ],
+  "part_a_performance": {
+    "attention_unet": {
+      "mean_dice": 0.8957499199443393,
+      "WT": 0.9528147379557291,
+      "TC": 0.9206755956013998,
+      "ET": 0.9205866058667501
+    },
+    "swin_unetr": {
+      "mean_dice": 0.8989874521891276,
+      "WT": 0.954591433207194,
+      "TC": 0.9243806600570679,
+      "ET": 0.931808590888977
+    },
+    "nnunet": {
+      "mean_dice": 0.8431343237559,
+      "WT": 0.93136598666509,
+      "TC": 0.8729193210601807,
+      "ET": 0.8825162251790365
+    },
+    "ensemble": {
+      "mean_dice": 0.8996301889419556,
+      "WT": 0.9567529757817587,
+      "TC": 0.9245501160621643,
+      "ET": 0.9276529947916666
+    }
+  },
+  "part_b_calibration": {
+    "x": "tumor_region_agreement",
+    "y": "ensemble__mean_dice",
+    "spearman_rho": 0.5,
+    "spearman_p": 0.6666666666666667,
+    "spearman_ci95": [
+      -1.0,
+      1.0
+    ],
+    "permutation_p": 1.0,
+    "partial_rho_controlling_volume": -0.1147078669352811,
+    "partial_p": 0.9268136049596726,
+    "min_detectable_r_at_this_n": NaN,
+    "power_vs_true_r_0.7": NaN,
+    "adequately_powered": false
+  },
+  "baseline_reference": {
+    "WT": 0.889,
+    "TC": 0.851,
+    "ET": 0.82,
+    "source": "nnU-Net, BraTS 2020 winner"
+  }
+}
