@@ -33,17 +33,18 @@ https://github.com/user-attachments/assets/5bd59055-36f9-4f7d-a35e-44a9899f52cf
 
 The demo walks through the full clinical workflow: drag-and-drop a BraTS case, watch the pipeline run all three models plus ensemble plus atlas analysis, explore the rotatable 3D brain mesh viewer, switch between model predictions, generate Grad-CAM explanations, and download the 5-page clinical PDF report.
 
+
 ---
 
 ## Running the System
 
-> **You are on `develop`.** This branch carries the complete runnable tree —
-> `src/` (ML pipeline), `backend/` (FastAPI), `frontend/` (Next.js), `tests/`.
-> `main` is a public showcase of the ML pipeline only and will not run as a
-> system. Clone `develop` if you want to bring CranioVision up.
+> Both `main` and `develop` carry the complete runnable tree, including
+> `src/` (ML pipeline), `backend/` (FastAPI), `frontend/` (Next.js), and `tests/`.
+> Use `main` for the shared baseline and `develop` for ongoing development.
+> The former `dev` branch has been merged into `develop` and retired.
 
 ```bash
-git clone -b develop https://github.com/DPHeshanRanasinghe/CranioVision.git
+git clone https://github.com/DPHeshanRanasinghe/CranioVision.git
 cd CranioVision
 ```
 
@@ -215,7 +216,7 @@ The inference tests need the checkpoints present.
 
 ```
 CranioVision/
-├── src/cranovision/     ML pipeline — the part `main` also publishes
+├── src/cranovision/     ML pipeline
 │   ├── config.py        Single source of truth: paths, labels, device
 │   ├── data/            BraTS scanning/splitting + MONAI transforms
 │   ├── models/          Attention U-Net, SwinUNETR, DynUNet factories

@@ -6,8 +6,8 @@ Redis-backed cache so the finals demo serves instantly instead of recomputing.
 Grad-CAM **~150 s → 0.36 s**. The replay survives a backend restart, because
 the cache lives in Redis rather than process memory.
 
-Branch: `demo` (both `backend/` and `frontend/` repos). `master` is the
-untouched checkpoint — `git checkout master` reverts everything here.
+The cache is included in the CranioVision repository on both `main` and
+`develop`. Run the commands below from this repository's `backend/` folder.
 
 ---
 

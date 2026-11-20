@@ -1,9 +1,8 @@
-# ===== CranioVision .gitignore — `develop` branch =====
+# ===== CranioVision .gitignore =====
 #
-# `develop` is the DEVELOPER branch: it carries the complete runnable tree
-# (src/ + backend/ + frontend/ + tests/) so a teammate can clone it and bring
-# the system up. This is deliberately a different policy from `main`, which is
-# a public showcase of the ML pipeline only.
+# Both `main` and `develop` carry the complete runnable tree
+# (src/ + backend/ + frontend/ + tests/) so a teammate can clone either branch
+# and bring the system up.
 #
 # What still stays out, and why:
 #   data/, models/, atlas_data/  — licensed or multi-GB; fetched, not cloned
